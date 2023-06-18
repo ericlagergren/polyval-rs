@@ -1,0 +1,65 @@
+[package]
+name = "polyhash"
+version = "0.1.2"
+description = """
+POLYVAL per RFC 8452.
+"""
+edition = "2021"
+license = "BSD-3-Clause"
+readme = "README.md"
+documentation = "https://docs.rs/polyhash"
+repository = "https://github.com/ericlagergren/polyval-rs"
+keywords = [ "polyval", "universal-hash" ]
+categories = [ "cryptography", "no-std", "no-std::no-alloc" ]
+
+[lib]
+
+[features]
+default = [
+	"zeroize"
+]
+
+# Enable the software-only backend.
+soft = []
+
+# Enable `std` support.
+#
+# This makes `Error` implement `std::core::Error`.
+std = []
+
+# Enable zeroize support.
+zeroize = [
+	"dep:zeroize",
+]
+
+#
+# Nightly features.
+#
+
+# Make `Error` implement `core::error::Error`.
+error_in_core = []
+
+[dependencies]
+cfg-if = { version = "1" }
+subtle = { version = "2.5" }
+zeroize = { version = "1.6", default-features = false, features = ["derive"], optional = true }
+
+[target.'cfg(any(target_arch = "x86", target_arch = "x86_64"))'.dependencies]
+cpufeatures = { version = "0.2" }
+
+[dev-dependencies]
+hex = { version = "0.4", features = ["serde"] }
+rand = { version = "0.8", features = ["std_rng"] }
+serde_json = { version = "1" }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docs"]
+
+[package.metadata.cargo-all-features]
+always_include_features = []
+
+denylist = [
+	"error_in_core",
+]
