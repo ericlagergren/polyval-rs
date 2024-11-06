@@ -3,67 +3,93 @@
 //! It's used by the other backends (`soft`, `aarch64`, etc.) if
 //! hardware support is not detected.
 
-#![forbid(unsafe_code)]
+#![allow(clippy::expect_used)]
+#![allow(clippy::indexing_slicing)]
 
-use {
-    crate::poly::BLOCK_SIZE,
-    core::ops::{BitXor, BitXorAssign, Mul},
-};
+use core::ops::{BitXor, BitXorAssign, Mul, MulAssign, Shl, Shr};
 
-/// An element in the field
-///
-/// ```text
-/// x^128 + x^127 + x^126 + x^121 + 1
-/// ```
-#[derive(Copy, Clone, Default, Debug)]
+#[cfg(feature = "zeroize")]
+use zeroize::Zeroize;
+
+use crate::poly::BLOCK_SIZE;
+
+#[derive(Copy, Clone, Debug, Default)]
+#[cfg_attr(feature = "zeroize", derive(Zeroize))]
 #[cfg_attr(test, derive(Eq, PartialEq))]
-#[cfg_attr(feature = "zeroize", derive(zeroize::Zeroize))]
-pub(crate) struct FieldElement(u64, u64);
+#[repr(transparent)]
+pub(crate) struct FieldElement(u128);
 
 impl FieldElement {
-    pub(crate) fn from_le_bytes(b: &[u8]) -> Self {
-        debug_assert!(b.len() >= 16);
-
-        Self(
-            u64::from_le_bytes(b[0..8].try_into().expect("should be 16 bytes")),
-            u64::from_le_bytes(
-                b[8..16].try_into().expect("should be 16 bytes"),
-            ),
-        )
+    pub const fn from_le_bytes(b: &[u8; 16]) -> Self {
+        Self(u128::from_le_bytes(*b))
     }
 
-    pub(crate) fn to_le_bytes(self) -> [u8; 16] {
-        let mut out = [0u8; 16];
-        out[0..8].copy_from_slice(&self.0.to_le_bytes());
-        out[8..16].copy_from_slice(&self.1.to_le_bytes());
-        out
+    pub const fn to_le_bytes(self) -> [u8; 16] {
+        self.0.to_le_bytes()
+    }
+
+    const fn pack(lo: u64, hi: u64) -> Self {
+        Self(((hi as u128) << 64) | (lo as u128))
+    }
+
+    const fn unpack(self) -> (u64, u64) {
+        let lo = self.0 as u64;
+        let hi = (self.0 >> 64) as u64;
+        (lo, hi)
+    }
+
+    /// Multiplies `acc` with the series of field elements in
+    /// `blocks`.
+    #[must_use = "this returns the result of the operation \
+                      without modifying the original"]
+    pub fn mul_series(self, pow: &[Self; 8], blocks: &[u8]) -> Self {
+        polymul_series(self, pow, blocks)
     }
 }
 
 impl BitXor for FieldElement {
     type Output = Self;
 
-    fn bitxor(self, rhs: Self) -> Self {
-        Self(self.0 ^ rhs.0, self.1 ^ rhs.1)
+    fn bitxor(self, rhs: Self) -> Self::Output {
+        Self(self.0 ^ rhs.0)
     }
 }
-
 impl BitXorAssign for FieldElement {
     fn bitxor_assign(&mut self, rhs: Self) {
         self.0 ^= rhs.0;
-        self.1 ^= rhs.1;
     }
 }
 
 impl Mul for FieldElement {
     type Output = Self;
 
-    fn mul(self, rhs: Self) -> Self {
+    fn mul(self, rhs: Self) -> Self::Output {
         polymul(self, rhs)
     }
 }
+impl MulAssign for FieldElement {
+    fn mul_assign(&mut self, rhs: Self) {
+        *self = *self * rhs;
+    }
+}
 
-pub(crate) fn polymul(x: FieldElement, y: FieldElement) -> FieldElement {
+impl Shl<u32> for FieldElement {
+    type Output = Self;
+
+    fn shl(self, rhs: u32) -> Self::Output {
+        Self(self.0 << rhs)
+    }
+}
+
+impl Shr<u32> for FieldElement {
+    type Output = Self;
+
+    fn shr(self, rhs: u32) -> Self::Output {
+        Self(self.0 >> rhs)
+    }
+}
+
+pub(super) const fn polymul(x: FieldElement, y: FieldElement) -> FieldElement {
     // We perform schoolbook multiplication of x and y:
     //
     // (x1,x0)*(y1,y0) = (x1*y1) + (x1*y0 + x0*y1) + (x0*y0)
@@ -90,47 +116,53 @@ pub(crate) fn polymul(x: FieldElement, y: FieldElement) -> FieldElement {
     // See [gueron] page 17-19.
     //
     // [gueron]: https://crypto.stanford.edu/RealWorldCrypto/slides/gueron.pdf]
-    let mut h = gf128_mul(x.1, y.1); // H
-    let mut m = gf128_mul(x.1 ^ x.0, y.1 ^ y.0); // M
-    let mut l = gf128_mul(x.0, y.0); // L
+    let (x0, x1) = x.unpack();
+    let (y0, y1) = y.unpack();
 
-    m ^= FieldElement(l.0 ^ h.0, l.1 ^ h.1);
+    let (mut h0, mut h1) = gf128_mul(x1, y1).unpack(); // H
+    let (mut m0, mut m1) = gf128_mul(x1 ^ x0, y1 ^ y0).unpack(); // M
+    let (l0, mut l1) = gf128_mul(x0, y0).unpack(); // L
 
-    l.1 ^= m.0 ^ (l.0 << 63) ^ (l.0 << 62) ^ (l.0 << 57);
-    h.0 ^= l.0 ^ (l.0 >> 1) ^ (l.0 >> 2) ^ (l.0 >> 7);
-    h.0 ^= m.1 ^ (l.1 << 63) ^ (l.1 << 62) ^ (l.1 << 57);
-    h.1 ^= l.1 ^ (l.1 >> 1) ^ (l.1 >> 2) ^ (l.1 >> 7);
+    m0 ^= l0 ^ h0;
+    m1 ^= l1 ^ h1;
 
-    FieldElement(h.0, h.1)
+    l1 ^= m0 ^ (l0 << 63) ^ (l0 << 62) ^ (l0 << 57);
+    h0 ^= l0 ^ (l0 >> 1) ^ (l0 >> 2) ^ (l0 >> 7);
+    h0 ^= m1 ^ (l1 << 63) ^ (l1 << 62) ^ (l1 << 57);
+    h1 ^= l1 ^ (l1 >> 1) ^ (l1 >> 2) ^ (l1 >> 7);
+
+    FieldElement::pack(h0, h1)
 }
 
 /// Multiplies `acc` with the series of field elements in
 /// `blocks`.
-pub(crate) fn polymul_series(
+fn polymul_series(
     mut acc: FieldElement,
     pow: &[FieldElement; 8],
-    blocks: &[u8],
+    mut blocks: &[u8],
 ) -> FieldElement {
     debug_assert!(blocks.len() % BLOCK_SIZE == 0);
 
     // Handle wide chunks.
-    let mut blocks = blocks.chunks_exact(BLOCK_SIZE * 8);
-    for chunk in blocks.by_ref() {
-        let mut h = FieldElement::default();
-        let mut m = FieldElement::default();
-        let mut l = FieldElement::default();
+    while let Some((chunk, rest)) = blocks.split_first_chunk::<{ BLOCK_SIZE * 8 }>() {
+        let mut h = FieldElement(0);
+        let mut m = FieldElement(0);
+        let mut l = FieldElement(0);
 
         macro_rules! karatsuba_xor {
-            ($i:expr) => {
-                let mut y =
-                    FieldElement::from_le_bytes(&chunk[$i * BLOCK_SIZE..]);
+            ($i:literal) => {
+                let block = &chunk[$i * BLOCK_SIZE..($i * BLOCK_SIZE) + 16]
+                    .try_into()
+                    .expect("should be exactly 16 bytes");
+                let mut y = FieldElement::from_le_bytes(*block);
                 if $i == 0 {
                     y ^= acc
                 };
-                let x = &pow[$i];
-                h ^= gf128_mul(x.1, y.1);
-                l ^= gf128_mul(x.0, y.0);
-                m ^= gf128_mul(x.1 ^ x.0, y.1 ^ y.0);
+                let (y0, y1) = y.unpack();
+                let (x0, x1) = pow[$i].unpack();
+                h ^= gf128_mul(x1, y1);
+                l ^= gf128_mul(x0, y0);
+                m ^= gf128_mul(x0 ^ x1, y0 ^ y1);
             };
         }
         karatsuba_xor!(7);
@@ -142,20 +174,27 @@ pub(crate) fn polymul_series(
         karatsuba_xor!(1);
         karatsuba_xor!(0);
 
-        m ^= FieldElement(l.0 ^ h.0, l.1 ^ h.1);
+        let (mut h0, mut h1) = h.unpack();
+        let (mut m0, mut m1) = m.unpack();
+        let (l0, mut l1) = l.unpack();
 
-        l.1 ^= m.0 ^ (l.0 << 63) ^ (l.0 << 62) ^ (l.0 << 57);
-        h.0 ^= l.0 ^ (l.0 >> 1) ^ (l.0 >> 2) ^ (l.0 >> 7);
-        h.0 ^= m.1 ^ (l.1 << 63) ^ (l.1 << 62) ^ (l.1 << 57);
-        h.1 ^= l.1 ^ (l.1 >> 1) ^ (l.1 >> 2) ^ (l.1 >> 7);
+        m0 ^= l0 ^ h0;
+        m1 ^= l1 ^ h1;
 
-        acc = h
+        l1 ^= m0 ^ (l0 << 63) ^ (l0 << 62) ^ (l0 << 57);
+        h0 ^= l0 ^ (l0 >> 1) ^ (l0 >> 2) ^ (l0 >> 7);
+        h0 ^= m1 ^ (l1 << 63) ^ (l1 << 62) ^ (l1 << 57);
+        h1 ^= l1 ^ (l1 >> 1) ^ (l1 >> 2) ^ (l1 >> 7);
+
+        acc = FieldElement::pack(h0, h1);
+        blocks = rest;
     }
 
     // Handle singles.
-    for block in blocks.remainder().chunks_exact(BLOCK_SIZE) {
+    while let Some((block, rest)) = blocks.split_first_chunk() {
         let y = FieldElement::from_le_bytes(block);
         acc = (acc ^ y) * pow[7];
+        blocks = rest;
     }
 
     acc
@@ -195,11 +234,6 @@ pub(crate) const fn gf128_mul(x: u64, y: u64) -> FieldElement {
     let t3 = (x0 * y3) ^ (x1 * y2) ^ (x2 * y1) ^ (x3 * y0) ^ (x4 * y4);
     let t4 = (x0 * y4) ^ (x1 * y3) ^ (x2 * y2) ^ (x3 * y1) ^ (x4 * y0);
 
-    let z = (t0 & MASK0)
-        | (t1 & MASK1)
-        | (t2 & MASK2)
-        | (t3 & MASK3)
-        | (t4 & MASK4);
-
-    FieldElement(z as u64, (z >> 64) as u64)
+    let fe = (t0 & MASK0) | (t1 & MASK1) | (t2 & MASK2) | (t3 & MASK3) | (t4 & MASK4);
+    FieldElement(fe)
 }

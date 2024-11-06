@@ -2,7 +2,7 @@
 
 extern crate test;
 
-use {polyval::*, test::Bencher};
+use {polyhash::*, test::Bencher};
 
 macro_rules! bench {
     ($name:ident, $bs:expr) => {

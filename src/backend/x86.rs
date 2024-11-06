@@ -5,17 +5,14 @@
     any(target_arch = "x86", target_arch = "x86_64")
 ))]
 
-use {
-    crate::{
-        generic,
-        poly::{Polyval, BLOCK_SIZE},
-    },
-    cfg_if::cfg_if,
-    core::{
-        ops::{BitXor, BitXorAssign, Mul},
-        ptr,
-    },
+use core::{
+    ops::{BitXor, BitXorAssign, Mul},
+    ptr,
 };
+
+use cfg_if::cfg_if;
+
+use crate::{generic, poly::BLOCK_SIZE};
 
 cfg_if! {
     if #[cfg(target_arch = "x86")] {
@@ -27,24 +24,13 @@ cfg_if! {
 
 cpufeatures::new!(have_pclmulqdq, "pclmulqdq");
 
-fn have_asm() -> bool {
+pub(crate) fn enabled() -> bool {
     // For some reason we can't detect pclmulqdq on an M1.
     // However, Go has no problem doing this.
     if cfg!(target_os = "macos") {
         true
     } else {
-        let ok = cfg!(all(
-            target_feature = "pclmulqdq",
-            target_feature = "sse",
-            target_feature = "sse2",
-        ));
-        ok && have_pclmulqdq::get()
-    }
-}
-
-impl Polyval {
-    pub(crate) fn update_blocks(&mut self, blocks: &[u8]) {
-        self.y = polymul_series(self.y, &self.pow, blocks)
+        have_pclmulqdq::get()
     }
 }
 
@@ -84,7 +70,7 @@ impl From<generic::FieldElement> for FieldElement {
 #[cfg(feature = "zeroize")]
 impl zeroize::Zeroize for FieldElement {
     fn zeroize(&mut self) {
-        todo!()
+        unsafe { self.0 = _mm_xor_si128(self.0, self.0) }
     }
 }
 
@@ -123,7 +109,8 @@ impl Mul for FieldElement {
     type Output = Self;
 
     fn mul(self, rhs: Self) -> Self {
-        polymul(self, rhs)
+        // SAFETY: TODO
+        unsafe { polymul(self, rhs) }
     }
 }
 
@@ -136,7 +123,7 @@ pub(crate) fn polymul(acc: FieldElement, key: FieldElement) -> FieldElement {
 }
 
 #[inline]
-#[target_feature(enable = "pclmulqdq,sse2,sse")]
+#[target_feature(enable = "pclmulqdq")]
 unsafe fn polymul_asm(x: FieldElement, y: FieldElement) -> FieldElement {
     let (h, m, l) = karatsuba1(x.0, y.0);
     let (h, l) = karatsuba2(h, m, l);
@@ -159,7 +146,7 @@ pub(crate) fn polymul_series(
     }
 }
 
-#[target_feature(enable = "pclmulqdq,sse2,sse")]
+#[target_feature(enable = "pclmulqdq")]
 pub(crate) unsafe fn polymul_series_asm(
     mut acc: FieldElement,
     pow: &[FieldElement; 8],
@@ -175,9 +162,7 @@ pub(crate) unsafe fn polymul_series_asm(
 
         macro_rules! karatsuba_xor {
             ($i:expr) => {
-                let mut y = _mm_loadu_si128(
-                    (&chunk[$i * BLOCK_SIZE..]).as_ptr() as *const __m128i,
-                );
+                let mut y = _mm_loadu_si128((&chunk[$i * BLOCK_SIZE..]).as_ptr() as *const __m128i);
                 if $i == 0 {
                     y = _mm_xor_si128(y, acc.0); // fold in accumulator
                 }
@@ -212,7 +197,7 @@ pub(crate) unsafe fn polymul_series_asm(
 
 /// Karatsuba decomposition for `x*y`.
 #[inline]
-#[target_feature(enable = "pclmulqdq,sse2,sse")]
+#[target_feature(enable = "pclmulqdq")]
 unsafe fn karatsuba1(x: __m128i, y: __m128i) -> (__m128i, __m128i, __m128i) {
     // First Karatsuba step: decompose x and y.
     //
@@ -231,7 +216,7 @@ unsafe fn karatsuba1(x: __m128i, y: __m128i) -> (__m128i, __m128i, __m128i) {
 
 /// Karatsuba combine.
 #[inline]
-#[target_feature(enable = "pclmulqdq,sse2,sse")]
+#[target_feature(enable = "pclmulqdq")]
 unsafe fn karatsuba2(h: __m128i, m: __m128i, l: __m128i) -> (__m128i, __m128i) {
     // Second Karatsuba step: combine into a 2n-bit product.
     //
@@ -265,16 +250,13 @@ unsafe fn karatsuba2(h: __m128i, m: __m128i, l: __m128i) -> (__m128i, __m128i) {
     let x01 = _mm_unpacklo_epi64(l, t);
 
     // {h1, m1^h0^h1^l1}
-    let x23 = _mm_castps_si128(_mm_movehl_ps(
-        _mm_castsi128_ps(h),
-        _mm_castsi128_ps(t),
-    ));
+    let x23 = _mm_castps_si128(_mm_movehl_ps(_mm_castsi128_ps(h), _mm_castsi128_ps(t)));
 
     (x23, x01)
 }
 
 #[inline]
-#[target_feature(enable = "pclmulqdq,sse2,sse")]
+#[target_feature(enable = "pclmulqdq")]
 unsafe fn mont_reduce(x23: __m128i, x01: __m128i) -> __m128i {
     // Perform the Montgomery reduction over the 256-bit X.
     //    [A1:A0] = X0 • poly
@@ -282,14 +264,70 @@ unsafe fn mont_reduce(x23: __m128i, x01: __m128i) -> __m128i {
     //    [C1:C0] = B0 • poly
     //    [D1:D0] = [B0 ⊕ C1 : B1 ⊕ C0]
     // Output: [D1 ⊕ X3 : D0 ⊕ X2]
-    static POLY: u128 =
-        1 << 127 | 1 << 126 | 1 << 121 | 1 << 63 | 1 << 62 | 1 << 57;
+    static POLY: u128 = 1 << 127 | 1 << 126 | 1 << 121 | 1 << 63 | 1 << 62 | 1 << 57;
     let poly = _mm_loadu_si128(ptr::addr_of!(POLY) as *const __m128i);
     let a = pmull(x01, poly);
     let b = _mm_xor_si128(x01, _mm_shuffle_epi32(a, 0x4e));
     let c = pmull2(b, poly);
     _mm_xor_si128(x23, _mm_xor_si128(c, b))
 }
+
+/*
+#[target_feature(enable = "pclmulqdq")]
+unsafe fn mul(x: __m128i, y: __m128i) -> __m128i {
+    let y = _mm_xor_si128(y, x);
+
+    let x0 = x;
+    let x1 = _mm_shuffle_epi32(x, 0x0E);
+    let x2 = _mm_xor_si128(x0, x1);
+    let y0 = y;
+
+    // Multiply values partitioned to 64-bit parts
+    let y1 = _mm_shuffle_epi32(y, 0x0E);
+    let y2 = _mm_xor_si128(y0, y1);
+    let t0 = _mm_clmulepi64_si128(y0, x0, 0x00);
+    let t1 = _mm_clmulepi64_si128(y, x, 0x11);
+    let t2 = _mm_clmulepi64_si128(y2, x2, 0x00);
+    let t2 = _mm_xor_si128(t2, _mm_xor_si128(t0, t1));
+    let v0 = t0;
+    let v1 = _mm_xor_si128(_mm_shuffle_epi32(t0, 0x0E), t2);
+    let v2 = _mm_xor_si128(t1, _mm_shuffle_epi32(t2, 0x0E));
+    let v3 = _mm_shuffle_epi32(t1, 0x0E);
+
+    // Polynomial reduction
+    let v2 = xor5(
+        v2,
+        v0,
+        _mm_srli_epi64(v0, 1),
+        _mm_srli_epi64(v0, 2),
+        _mm_srli_epi64(v0, 7),
+    );
+
+    let v1 = xor4(
+        v1,
+        _mm_slli_epi64(v0, 63),
+        _mm_slli_epi64(v0, 62),
+        _mm_slli_epi64(v0, 57),
+    );
+
+    let v3 = xor5(
+        v3,
+        v1,
+        _mm_srli_epi64(v1, 1),
+        _mm_srli_epi64(v1, 2),
+        _mm_srli_epi64(v1, 7),
+    );
+
+    let v2 = xor4(
+        v2,
+        _mm_slli_epi64(v1, 63),
+        _mm_slli_epi64(v1, 62),
+        _mm_slli_epi64(v1, 57),
+    );
+
+    _mm_unpacklo_epi64(v2, v3)
+}
+*/
 
 /// Multiplies the low bits in `a` and `b`.
 #[inline(always)]
@@ -304,6 +342,6 @@ unsafe fn pmull2(a: __m128i, b: __m128i) -> __m128i {
 }
 
 #[cfg(test)]
-pub(crate) fn gf128_mul(x: u64, y: u64) -> FieldElement {
+pub(crate) unsafe fn gf128_mul(x: u64, y: u64) -> FieldElement {
     generic::gf128_mul(x, y).into()
 }
