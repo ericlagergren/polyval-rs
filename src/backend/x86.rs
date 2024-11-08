@@ -7,7 +7,6 @@
 ))]
 
 use core::{
-    mem,
     ops::{BitXor, BitXorAssign, Mul, MulAssign},
     ptr,
 };
@@ -66,7 +65,7 @@ impl FieldElement {
         if have_pclmulqdq() {
             // SAFETY: `__m128i` and `FieldElement` have the same
             // layout in memory.
-            let pow = unsafe { mem::transmute::<&[FieldElement; 8], &[__m128i; 8]>(pow) };
+            let pow = unsafe { &*(pow as *const [FieldElement; 8]).cast() };
             // SAFETY: `polymul_series_asm` requires the `sse2`
             // and `pclmulqdq` target features, which we have.
             let fe = unsafe { polymul_series_asm(self.0, pow, blocks) };

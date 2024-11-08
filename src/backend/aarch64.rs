@@ -9,9 +9,8 @@
 use core::{
     arch::aarch64::{
         uint8x16_t, uint8x16x4_t, vdupq_n_u8, veorq_u8, vextq_u8, vgetq_lane_u64, vld1q_u8,
-        vld1q_u8_x4, vmull_p64, vreinterpretq_u64_u8, vreinterpretq_u8_p128, vst1q_u8,
+        vld1q_u8_x4, vmull_p64, vreinterpretq_u64_u8, vreinterpretq_u8_p128, vrev64q_u8, vst1q_u8,
     },
-    mem,
     ops::{BitXor, BitXorAssign, Mul, MulAssign},
 };
 
@@ -33,15 +32,27 @@ impl FieldElement {
     pub fn from_le_bytes(data: &[u8; 16]) -> Self {
         // SAFETY: This intrinsic requires the `neon` target feature,
         // which we have.
-        let fe = unsafe { vld1q_u8(data.as_ptr()) };
+        let mut fe = unsafe { vld1q_u8(data.as_ptr()) };
+        if cfg!(target_endian = "big") {
+            // SAFETY: This intrinsic requires the `neon` target
+            // feature, which we have.
+            fe = unsafe { vrev64q_u8(fe) }
+        }
         Self(fe)
     }
 
     pub fn to_le_bytes(self) -> [u8; 16] {
         let mut out = [0u8; 16];
+        let fe = if cfg!(target_endian = "big") {
+            // SAFETY: This intrinsic requires the `neon` target
+            // feature, which we have.
+            unsafe { vrev64q_u8(self.0) }
+        } else {
+            self.0
+        };
         // SAFETY: This intrinsic requires the `neon` target
         // feature, which we have.
-        unsafe { vst1q_u8(out.as_mut_ptr(), self.0) }
+        unsafe { vst1q_u8(out.as_mut_ptr(), fe) }
         out
     }
 
@@ -51,11 +62,11 @@ impl FieldElement {
                       without modifying the original"]
     pub fn mul_series(self, pow: &[Self; 8], blocks: &[u8]) -> Self {
         if have_aes() {
-            // SAFETY: `uint8x16_t` and `FieldElement` have the same
-            // layout in memory.
-            let pow = unsafe { mem::transmute::<&[FieldElement; 8], &[uint8x16_t; 8]>(pow) };
-            // SAFETY: `polymul_series_asm` requires the `neon` and
-            // `aes` target features, which we have.
+            // SAFETY: `uint8x16_t` and `FieldElement` have the
+            // same layout in memory.
+            let pow = unsafe { &*(pow as *const [FieldElement; 8]).cast() };
+            // SAFETY: `polymul_series_asm` requires the `neon`
+            // and `aes` target features, which we have.
             let fe = unsafe { polymul_series_asm(self.0, pow, blocks) };
             FieldElement(fe)
         } else {
@@ -137,7 +148,7 @@ impl PartialEq for FieldElement {
         let v = unsafe { vceqq_u8(self.0, other.0) };
 
         // SAFETY: `uint8x16_t` has the same size as `u128`.
-        let v = unsafe { mem::transmute::<uint8x16_t, u128>(v) };
+        let v = unsafe { core::mem::transmute::<uint8x16_t, u128>(v) };
 
         v == u128::MAX
     }

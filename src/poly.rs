@@ -38,7 +38,7 @@ impl Key {
 
     /// Creates a POLYVAL key.
     ///
-    /// It is an error if the key is all zero.
+    /// It returns `None` if the key is all zero.
     pub fn new(key: [u8; KEY_SIZE]) -> Option<Self> {
         if bool::from(key.ct_eq(Self::ZERO)) {
             None
@@ -94,14 +94,19 @@ pub struct Polyval {
 impl Polyval {
     /// Creates an instance of POLYVAL.
     pub fn new(key: &Key) -> Self {
-        let h = FieldElement::from_le_bytes(&key.0);
-        let mut pow: [FieldElement; 8] = Default::default();
-        for i in (0..pow.len()).rev() {
-            pow[i] = h;
-            if i < pow.len() - 1 {
-                pow[i] *= pow[i + 1];
+        let pow = {
+            let h = FieldElement::from_le_bytes(&key.0);
+            let mut prev = h;
+            let mut pow: [FieldElement; 8] = Default::default();
+            for (i, v) in pow.iter_mut().rev().enumerate() {
+                *v = h;
+                if i > 0 {
+                    *v *= prev;
+                }
+                prev = *v;
             }
-        }
+            pow
+        };
         Self {
             y: FieldElement::default(),
             pow,
@@ -133,6 +138,10 @@ impl Polyval {
         }
         if !tail.is_empty() {
             let mut block = [0u8; BLOCK_SIZE];
+            #[allow(
+                clippy::indexing_slicing,
+                reason = "The compiler can prove the slice is in bounds."
+            )]
             block[..tail.len()].copy_from_slice(tail);
             self.update_blocks(&block);
         }
@@ -156,19 +165,23 @@ impl Polyval {
     }
 }
 
+impl fmt::Debug for Polyval {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Polyval").finish_non_exhaustive()
+    }
+}
+
 /// An authentication tag.
 #[derive(Copy, Clone, Debug)]
 pub struct Tag([u8; 16]);
 
 impl ConstantTimeEq for Tag {
-    #[inline]
     fn ct_eq(&self, other: &Self) -> Choice {
         self.0.ct_eq(&other.0)
     }
 }
 
 impl From<Tag> for [u8; 16] {
-    #[inline]
     fn from(tag: Tag) -> Self {
         tag.0
     }
