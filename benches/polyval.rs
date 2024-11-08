@@ -1,32 +1,47 @@
-#![feature(test)]
+use core::hint::black_box;
 
-extern crate test;
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use polyhash::*;
 
-use {polyhash::*, test::Bencher};
+fn benchmark(c: &mut Criterion) {
+    let key = Key::new_unchecked([1u8; 16]);
+    let mut m = Polyval::new(&key);
 
-macro_rules! bench {
-    ($name:ident, $bs:expr) => {
-        #[bench]
-        fn $name(b: &mut Bencher) {
-            let key = Key::new(&[1u8; 16]).expect("impossible");
-            let mut m = Polyval::new(&key);
-            let data = [0; $bs];
+    let sizes = [16, 64, 128, 256, 512, 1024, 2048, 4096, 8192];
 
-            b.iter(|| {
-                m.update_padded(&data);
-            });
+    let mut g = c.benchmark_group("aligned");
+    for size in sizes {
+        g.throughput(Throughput::Bytes(size as u64));
+        g.bench_with_input(
+            BenchmarkId::new("update_padded", size),
+            &size,
+            |b, &size| {
+                let data = vec![0; size];
+                b.iter(|| {
+                    black_box(black_box(&mut m).update_padded(black_box(&data)));
+                });
+            },
+        );
+    }
+    g.finish();
 
-            b.bytes = $bs;
-        }
-    };
+    let mut g = c.benchmark_group("unaligned");
+    for size in sizes {
+        let size = size - 1;
+        g.throughput(Throughput::Bytes(size as u64));
+        g.bench_with_input(
+            BenchmarkId::new("update_padded", size),
+            &size,
+            |b, &size| {
+                let data = vec![0; size];
+                b.iter(|| {
+                    black_box(black_box(&mut m).update_padded(black_box(&data)));
+                });
+            },
+        );
+    }
+    g.finish();
 }
 
-bench!(bench1_16, 16);
-bench!(bench2_64, 64);
-bench!(bench3_128, 128);
-bench!(bench4_256, 256);
-bench!(bench5_512, 512);
-bench!(bench6_1024, 1024);
-bench!(bench7_2048, 2048);
-bench!(bench8_4096, 4096);
-bench!(bench9_8192, 8192);
+criterion_group!(benches, benchmark);
+criterion_main!(benches);

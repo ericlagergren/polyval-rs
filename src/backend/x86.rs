@@ -18,11 +18,16 @@ use crate::poly::BLOCK_SIZE;
 
 cfg_if! {
     if #[cfg(target_arch = "x86")] {
-        use core::arch::x86::*;
+        use core::arch::x86 as imp;
     } else {
-        use core::arch::x86_64::*;
+        use core::arch::x86_64 as imp;
     }
 }
+use imp::{
+    __m128i, _mm_castps_si128, _mm_castsi128_ps, _mm_clmulepi64_si128, _mm_loadu_si128,
+    _mm_movehl_ps, _mm_setzero_si128, _mm_shuffle_epi32, _mm_shuffle_ps, _mm_storeu_si128,
+    _mm_unpacklo_epi64, _mm_xor_si128,
+};
 
 // NB: `pclmulqdq` implies `sse2`.
 cpufeatures::new!(have_pclmulqdq, "pclmulqdq");
@@ -42,15 +47,15 @@ pub(crate) fn have_pclmulqdq() -> bool {
 pub(crate) struct FieldElement(__m128i);
 
 impl FieldElement {
-    pub fn from_le_bytes(data: &[u8; 16]) -> Self {
+    pub fn from_le_bytes(data: &[u8; BLOCK_SIZE]) -> Self {
         // SAFETY: This intrinsic requires the `sse2` target
         // feature, which we have.
         let fe = unsafe { _mm_loadu_si128(data.as_ptr().cast()) };
         Self(fe)
     }
 
-    pub fn to_le_bytes(self) -> [u8; 16] {
-        let mut out = [0u8; 16];
+    pub fn to_le_bytes(self) -> [u8; BLOCK_SIZE] {
+        let mut out = [0u8; BLOCK_SIZE];
         // SAFETY: This intrinsic requires the `sse2` target
         // feature, which we have.
         unsafe { _mm_storeu_si128(out.as_mut_ptr().cast(), self.0) }
@@ -64,7 +69,8 @@ impl FieldElement {
     pub fn mul_series(self, pow: &[Self; 8], blocks: &[u8]) -> Self {
         if have_pclmulqdq() {
             // SAFETY: `__m128i` and `FieldElement` have the same
-            // layout in memory.
+            // layout in memory. The pointer came from a ref, so
+            // it is safe to dereference.
             let pow = unsafe { &*(pow as *const [FieldElement; 8]).cast() };
             // SAFETY: `polymul_series_asm` requires the `sse2`
             // and `pclmulqdq` target features, which we have.
@@ -130,6 +136,8 @@ impl MulAssign for FieldElement {
 #[cfg(feature = "zeroize")]
 impl zeroize::Zeroize for FieldElement {
     fn zeroize(&mut self) {
+        // SAFETY: This intrinsic requires the `sse2` target
+        // feature, which we have.
         unsafe { self.0 = _mm_xor_si128(self.0, self.0) }
     }
 }
@@ -165,6 +173,8 @@ impl From<generic::FieldElement> for FieldElement {
 #[inline]
 #[target_feature(enable = "sse2,pclmulqdq")]
 unsafe fn polymul_asm(x: __m128i, y: __m128i) -> __m128i {
+    debug_assert!(have_pclmulqdq());
+
     let (h, m, l) = karatsuba1(x, y);
     let (h, l) = karatsuba2(h, m, l);
     mont_reduce(h, l) // d
@@ -178,20 +188,23 @@ unsafe fn polymul_asm(x: __m128i, y: __m128i) -> __m128i {
 pub(crate) unsafe fn polymul_series_asm(
     mut acc: __m128i,
     pow: &[__m128i; 8],
-    blocks: &[u8],
+    mut blocks: &[u8],
 ) -> __m128i {
     debug_assert!(have_pclmulqdq());
     debug_assert!(blocks.len() % BLOCK_SIZE == 0);
 
-    let mut blocks = blocks.chunks_exact(BLOCK_SIZE * pow.len());
-    for chunk in blocks.by_ref() {
+    while let Some((chunk, rest)) = blocks.split_first_chunk::<{ BLOCK_SIZE * 8 }>() {
         let mut h = _mm_setzero_si128();
         let mut m = _mm_setzero_si128();
         let mut l = _mm_setzero_si128();
 
         macro_rules! karatsuba_xor {
             ($i:expr) => {
-                let mut y = _mm_loadu_si128((&chunk[$i * BLOCK_SIZE..]).as_ptr() as *const __m128i);
+                let block: &[u8; BLOCK_SIZE] = &chunk
+                    [$i * BLOCK_SIZE..($i * BLOCK_SIZE) + BLOCK_SIZE]
+                    .try_into()
+                    .expect("should be exactly `BLOCK_SIZE` bytes");
+                let mut y = _mm_loadu_si128(block.as_ptr().cast());
                 if $i == 0 {
                     y = _mm_xor_si128(y, acc); // fold in accumulator
                 }
@@ -213,14 +226,16 @@ pub(crate) unsafe fn polymul_series_asm(
 
         let (h, l) = karatsuba2(h, m, l);
         acc = mont_reduce(h, l);
+        blocks = rest;
     }
 
     // Handle singles.
-    for block in blocks.remainder().chunks_exact(BLOCK_SIZE) {
+    while let Some((block, rest)) = blocks.split_first_chunk::<BLOCK_SIZE>() {
         let y = _mm_loadu_si128(block.as_ptr().cast());
         // acc = (acc ^ y) * pow[7];
         acc = _mm_xor_si128(acc, y);
         acc = polymul_asm(acc, pow[7]);
+        blocks = rest;
     }
 
     acc
@@ -230,6 +245,8 @@ pub(crate) unsafe fn polymul_series_asm(
 #[inline]
 #[target_feature(enable = "sse2,pclmulqdq")]
 unsafe fn karatsuba1(x: __m128i, y: __m128i) -> (__m128i, __m128i, __m128i) {
+    debug_assert!(have_pclmulqdq());
+
     // First Karatsuba step: decompose x and y.
     //
     // (x1*y0 + x0*y1) = (x1+x0) * (y1+x0) + (x1*y1) + (x0*y0)
@@ -249,6 +266,8 @@ unsafe fn karatsuba1(x: __m128i, y: __m128i) -> (__m128i, __m128i, __m128i) {
 #[inline]
 #[target_feature(enable = "sse2,pclmulqdq")]
 unsafe fn karatsuba2(h: __m128i, m: __m128i, l: __m128i) -> (__m128i, __m128i) {
+    debug_assert!(have_pclmulqdq());
+
     // Second Karatsuba step: combine into a 2n-bit product.
     //
     // m0 ^= l0 ^ h0 // = m0^(l0^h0)
@@ -292,6 +311,8 @@ unsafe fn karatsuba2(h: __m128i, m: __m128i, l: __m128i) -> (__m128i, __m128i) {
 #[inline]
 #[target_feature(enable = "sse2,pclmulqdq")]
 unsafe fn mont_reduce(x23: __m128i, x01: __m128i) -> __m128i {
+    debug_assert!(have_pclmulqdq());
+
     // Perform the Montgomery reduction over the 256-bit X.
     //    [A1:A0] = X0 • poly
     //    [B1:B0] = [X0 ⊕ A1 : X1 ⊕ A0]
@@ -299,7 +320,7 @@ unsafe fn mont_reduce(x23: __m128i, x01: __m128i) -> __m128i {
     //    [D1:D0] = [B0 ⊕ C1 : B1 ⊕ C0]
     // Output: [D1 ⊕ X3 : D0 ⊕ X2]
     static POLY: u128 = 1 << 127 | 1 << 126 | 1 << 121 | 1 << 63 | 1 << 62 | 1 << 57;
-    let poly = _mm_loadu_si128(ptr::addr_of!(POLY) as *const __m128i);
+    let poly = _mm_loadu_si128(ptr::addr_of!(POLY).cast());
     let a = pmull(x01, poly);
     let b = _mm_xor_si128(x01, _mm_shuffle_epi32(a, 0x4e));
     let c = pmull2(b, poly);
@@ -314,6 +335,8 @@ unsafe fn mont_reduce(x23: __m128i, x01: __m128i) -> __m128i {
 #[inline]
 #[target_feature(enable = "sse2,pclmulqdq")]
 unsafe fn pmull(a: __m128i, b: __m128i) -> __m128i {
+    debug_assert!(have_pclmulqdq());
+
     _mm_clmulepi64_si128(a, b, 0x00)
 }
 
@@ -325,5 +348,7 @@ unsafe fn pmull(a: __m128i, b: __m128i) -> __m128i {
 #[inline]
 #[target_feature(enable = "sse2,pclmulqdq")]
 unsafe fn pmull2(a: __m128i, b: __m128i) -> __m128i {
+    debug_assert!(have_pclmulqdq());
+
     _mm_clmulepi64_si128(a, b, 0x11)
 }

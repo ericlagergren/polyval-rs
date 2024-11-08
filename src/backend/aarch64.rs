@@ -29,7 +29,7 @@ fn have_aes() -> bool {
 pub(crate) struct FieldElement(uint8x16_t);
 
 impl FieldElement {
-    pub fn from_le_bytes(data: &[u8; 16]) -> Self {
+    pub fn from_le_bytes(data: &[u8; BLOCK_SIZE]) -> Self {
         // SAFETY: This intrinsic requires the `neon` target feature,
         // which we have.
         let mut fe = unsafe { vld1q_u8(data.as_ptr()) };
@@ -41,8 +41,8 @@ impl FieldElement {
         Self(fe)
     }
 
-    pub fn to_le_bytes(self) -> [u8; 16] {
-        let mut out = [0u8; 16];
+    pub fn to_le_bytes(self) -> [u8; BLOCK_SIZE] {
+        let mut out = [0u8; BLOCK_SIZE];
         let fe = if cfg!(target_endian = "big") {
             // SAFETY: This intrinsic requires the `neon` target
             // feature, which we have.
@@ -63,7 +63,8 @@ impl FieldElement {
     pub fn mul_series(self, pow: &[Self; 8], blocks: &[u8]) -> Self {
         if have_aes() {
             // SAFETY: `uint8x16_t` and `FieldElement` have the
-            // same layout in memory.
+            // same layout in memory. The pointer came from
+            // a reference, so it safe to dereference.
             let pow = unsafe { &*(pow as *const [FieldElement; 8]).cast() };
             // SAFETY: `polymul_series_asm` requires the `neon`
             // and `aes` target features, which we have.

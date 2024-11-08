@@ -20,11 +20,11 @@ use crate::poly::BLOCK_SIZE;
 pub(crate) struct FieldElement(u128);
 
 impl FieldElement {
-    pub const fn from_le_bytes(b: &[u8; 16]) -> Self {
+    pub const fn from_le_bytes(b: &[u8; BLOCK_SIZE]) -> Self {
         Self(u128::from_le_bytes(*b))
     }
 
-    pub const fn to_le_bytes(self) -> [u8; 16] {
+    pub const fn to_le_bytes(self) -> [u8; BLOCK_SIZE] {
         self.0.to_le_bytes()
     }
 
@@ -151,9 +151,9 @@ fn polymul_series(
 
         macro_rules! karatsuba_xor {
             ($i:literal) => {
-                let block = &chunk[$i * BLOCK_SIZE..($i * BLOCK_SIZE) + 16]
+                let block = &chunk[$i * BLOCK_SIZE..($i * BLOCK_SIZE) + BLOCK_SIZE]
                     .try_into()
-                    .expect("should be exactly 16 bytes");
+                    .expect("should be exactly BLOCK_SIZE bytes");
                 let mut y = FieldElement::from_le_bytes(*block);
                 if $i == 0 {
                     y ^= acc

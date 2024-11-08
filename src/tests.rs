@@ -23,8 +23,8 @@ fn test_rfc_vectors() {
         },
         TestCase {
             h: "25629347589242761d31f826ba4b757b",
-            x: "4f4f95668c83dfb6401762bb2d01a262\
-                 d1a24ddd2721d006bbe45f20d3c9f362",
+            x: "4f4f95668c83dfb6401762bb2d01a262d1a24ddd2721d006bbe45f20d3c9f3\
+                62",
             r: "f7a3b47b846119fae5b7866cf5e5b77e",
         },
         TestCase {
@@ -91,7 +91,7 @@ fn test_rfc_vectors() {
         let h = unhex(tc.h);
         let x = unhex(tc.x);
         let r = unhex(tc.r);
-        let k = Key::new_unchecked(h.as_slice().try_into().expect("should be `KEY_SIZE` bytes"));
+        let k = Key::new_unchecked(h.try_into().expect("should be `KEY_SIZE` bytes"));
         let mut p = Polyval::new(&k);
         p.update_padded(&x);
         let got: [u8; 16] = p.clone().tag().into();
