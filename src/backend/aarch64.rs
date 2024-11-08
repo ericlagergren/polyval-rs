@@ -18,6 +18,7 @@ use core::{
 use super::generic;
 use crate::poly::BLOCK_SIZE;
 
+// NB: `aes` implies `neon`.
 cpufeatures::new!(have_aes, "aes");
 
 fn have_aes() -> bool {
@@ -164,7 +165,7 @@ unsafe fn polymul_asm(x: uint8x16_t, y: uint8x16_t) -> uint8x16_t {
 
     let (h, m, l) = karatsuba1(x, y);
     let (h, l) = karatsuba2(h, m, l);
-    mont_reduce(h, l)
+    mont_reduce(h, l) // d
 }
 
 /// Multiplies `acc` with the series of field elements in
@@ -173,6 +174,7 @@ unsafe fn polymul_asm(x: uint8x16_t, y: uint8x16_t) -> uint8x16_t {
 /// # Safety
 ///
 /// The NEON and AES architectural features must be enabled.
+#[inline]
 #[target_feature(enable = "neon,aes")]
 unsafe fn polymul_series_asm(
     mut acc: uint8x16_t,

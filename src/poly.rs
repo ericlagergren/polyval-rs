@@ -203,7 +203,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg(not(target_arch = "aarch64"))]
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")))]
     fn test_gf128_mul_commutative() {
         use rand::{rngs::StdRng, RngCore, SeedableRng};
 

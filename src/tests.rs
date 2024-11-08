@@ -108,8 +108,8 @@ fn test_vectors() {
                 tc.description
             )
         });
-        let key = Key::new(b)
-            .unwrap_or_else(|_| panic!("#{i}: {} should be a valid key", tc.description));
+        let key =
+            Key::new(b).unwrap_or_else(|| panic!("#{i}: {} should be a valid key", tc.description));
         let mut p = Polyval::new(&key);
         p.update(&tc.input.message_hex[..])
             .unwrap_or_else(|_| panic!("#{i}: {} should block sized", tc.description));

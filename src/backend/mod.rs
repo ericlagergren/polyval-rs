@@ -15,7 +15,10 @@ cfg_if::cfg_if! {
     }
 }
 
-#[cfg(all(test, not(target_arch = "aarch64")))]
+#[cfg(all(
+    test,
+    not(any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64"))
+))]
 pub(crate) use imp::gf128_mul;
 /// An element in the field
 ///

@@ -2,17 +2,20 @@
 
 #![cfg(all(
     not(feature = "soft"),
-    any(target_arch = "x86", target_arch = "x86_64")
+    any(target_arch = "x86", target_arch = "x86_64"),
+    target_feature = "sse2",
 ))]
 
 use core::{
-    ops::{BitXor, BitXorAssign, Mul},
+    mem,
+    ops::{BitXor, BitXorAssign, Mul, MulAssign},
     ptr,
 };
 
 use cfg_if::cfg_if;
 
-use crate::{generic, poly::BLOCK_SIZE};
+use super::generic;
+use crate::poly::BLOCK_SIZE;
 
 cfg_if! {
     if #[cfg(target_arch = "x86")] {
@@ -22,9 +25,10 @@ cfg_if! {
     }
 }
 
+// NB: `pclmulqdq` implies `sse2`.
 cpufeatures::new!(have_pclmulqdq, "pclmulqdq");
 
-pub(crate) fn enabled() -> bool {
+pub(crate) fn have_pclmulqdq() -> bool {
     // For some reason we can't detect pclmulqdq on an M1.
     // However, Go has no problem doing this.
     if cfg!(target_os = "macos") {
@@ -34,36 +38,93 @@ pub(crate) fn enabled() -> bool {
     }
 }
 
-/// An element in the field
-///
-/// ```text
-/// x^128 + x^127 + x^126 + x^121 + 1
-/// ```
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
 pub(crate) struct FieldElement(__m128i);
 
 impl FieldElement {
-    pub(crate) fn from_le_bytes(data: &[u8]) -> Self {
-        Self(unsafe { _mm_loadu_si128(data.as_ptr() as *const __m128i) })
+    pub fn from_le_bytes(data: &[u8; 16]) -> Self {
+        // SAFETY: This intrinsic requires the `sse2` target
+        // feature, which we have.
+        let fe = unsafe { _mm_loadu_si128(data.as_ptr().cast()) };
+        Self(fe)
     }
 
-    pub(crate) fn to_le_bytes(self) -> [u8; 16] {
+    pub fn to_le_bytes(self) -> [u8; 16] {
         let mut out = [0u8; 16];
-        unsafe { _mm_storeu_si128(out.as_mut_ptr() as *mut __m128i, self.0) }
+        // SAFETY: This intrinsic requires the `sse2` target
+        // feature, which we have.
+        unsafe { _mm_storeu_si128(out.as_mut_ptr().cast(), self.0) }
         out
     }
-}
 
-impl From<FieldElement> for generic::FieldElement {
-    fn from(fe: FieldElement) -> Self {
-        Self::from_le_bytes(&fe.to_le_bytes())
+    /// Multiplies `acc` with the series of field elements in
+    /// `blocks`.
+    #[must_use = "this returns the result of the operation \
+                      without modifying the original"]
+    pub fn mul_series(self, pow: &[Self; 8], blocks: &[u8]) -> Self {
+        if have_pclmulqdq() {
+            // SAFETY: `__m128i` and `FieldElement` have the same
+            // layout in memory.
+            let pow = unsafe { mem::transmute::<&[FieldElement; 8], &[__m128i; 8]>(pow) };
+            // SAFETY: `polymul_series_asm` requires the `sse2`
+            // and `pclmulqdq` target features, which we have.
+            let fe = unsafe { polymul_series_asm(self.0, pow, blocks) };
+            FieldElement(fe)
+        } else {
+            let pow = pow.map(Into::into);
+            generic::FieldElement::from(self)
+                .mul_series(&pow, blocks)
+                .into()
+        }
     }
 }
 
-impl From<generic::FieldElement> for FieldElement {
-    fn from(fe: generic::FieldElement) -> Self {
-        Self::from_le_bytes(&fe.to_le_bytes())
+impl Default for FieldElement {
+    fn default() -> Self {
+        // SAFETY: This intrinsic requires the `sse2` target
+        // feature, which we have.
+        let fe = unsafe { _mm_setzero_si128() };
+        Self(fe)
+    }
+}
+
+impl BitXor for FieldElement {
+    type Output = Self;
+
+    fn bitxor(self, rhs: Self) -> Self {
+        // SAFETY: This intrinsic requires the `sse2` target
+        // feature, which we have.
+        let fe = unsafe { _mm_xor_si128(self.0, rhs.0) };
+        Self(fe)
+    }
+}
+impl BitXorAssign for FieldElement {
+    fn bitxor_assign(&mut self, rhs: Self) {
+        // SAFETY: This intrinsic requires the `sse2` target
+        // feature, which we have.
+        self.0 = unsafe { _mm_xor_si128(self.0, rhs.0) };
+    }
+}
+
+impl Mul for FieldElement {
+    type Output = Self;
+
+    fn mul(self, rhs: Self) -> Self {
+        if have_pclmulqdq() {
+            // SAFETY: `polymul_asm` requires the `sse2` and
+            // `pclmulqdq` target features, which we have.
+            let fe = unsafe { polymul_asm(self.0, rhs.0) };
+            Self(fe)
+        } else {
+            let fe = generic::FieldElement::from(self) * generic::FieldElement::from(rhs);
+            fe.into()
+        }
+    }
+}
+impl MulAssign for FieldElement {
+    fn mul_assign(&mut self, rhs: Self) {
+        *self = *self * rhs;
     }
 }
 
@@ -80,78 +141,47 @@ impl Eq for FieldElement {}
 #[cfg(test)]
 impl PartialEq for FieldElement {
     fn eq(&self, other: &Self) -> bool {
+        // SAFETY: This intrinsic requires the `sse2` target
+        // feature, which we have.
         let v = unsafe { _mm_movemask_epi8(_mm_cmpeq_epi8(self.0, other.0)) };
         v == 0xffff
     }
 }
 
-impl Default for FieldElement {
-    fn default() -> Self {
-        unsafe { Self(_mm_setzero_si128()) }
+impl From<FieldElement> for generic::FieldElement {
+    fn from(fe: FieldElement) -> Self {
+        Self::from_le_bytes(&fe.to_le_bytes())
     }
 }
 
-impl BitXor for FieldElement {
-    type Output = Self;
-
-    fn bitxor(self, rhs: Self) -> Self {
-        Self(unsafe { _mm_xor_si128(self.0, rhs.0) })
+impl From<generic::FieldElement> for FieldElement {
+    fn from(fe: generic::FieldElement) -> Self {
+        Self::from_le_bytes(&fe.to_le_bytes())
     }
 }
 
-impl BitXorAssign for FieldElement {
-    fn bitxor_assign(&mut self, rhs: Self) {
-        *self = Self(unsafe { _mm_xor_si128(self.0, rhs.0) })
-    }
-}
-
-impl Mul for FieldElement {
-    type Output = Self;
-
-    fn mul(self, rhs: Self) -> Self {
-        // SAFETY: TODO
-        unsafe { polymul(self, rhs) }
-    }
-}
-
-pub(crate) fn polymul(acc: FieldElement, key: FieldElement) -> FieldElement {
-    if have_asm() {
-        unsafe { polymul_asm(acc, key) }
-    } else {
-        generic::polymul(acc.into(), key.into()).into()
-    }
-}
-
+/// # Safety
+///
+/// The SSE2 and pclmulqdq target features must be enavled.
 #[inline]
-#[target_feature(enable = "pclmulqdq")]
-unsafe fn polymul_asm(x: FieldElement, y: FieldElement) -> FieldElement {
-    let (h, m, l) = karatsuba1(x.0, y.0);
+#[target_feature(enable = "sse2,pclmulqdq")]
+unsafe fn polymul_asm(x: __m128i, y: __m128i) -> __m128i {
+    let (h, m, l) = karatsuba1(x, y);
     let (h, l) = karatsuba2(h, m, l);
-    let d = mont_reduce(h, l);
-    FieldElement(d)
+    mont_reduce(h, l) // d
 }
 
-/// Multiplies `acc` with the series of field elements in
-/// `blocks`.
-pub(crate) fn polymul_series(
-    acc: FieldElement,
-    pow: &[FieldElement; 8],
-    blocks: &[u8],
-) -> FieldElement {
-    if have_asm() {
-        unsafe { polymul_series_asm(acc, pow, blocks) }
-    } else {
-        let pow = pow.map(|fe| fe.into());
-        generic::polymul_series(acc.into(), &pow, blocks).into()
-    }
-}
-
-#[target_feature(enable = "pclmulqdq")]
+/// # Safety
+///
+/// The SSE2 and pclmulqdq target features must be enavled.
+#[inline]
+#[target_feature(enable = "sse2,pclmulqdq")]
 pub(crate) unsafe fn polymul_series_asm(
-    mut acc: FieldElement,
-    pow: &[FieldElement; 8],
+    mut acc: __m128i,
+    pow: &[__m128i; 8],
     blocks: &[u8],
-) -> FieldElement {
+) -> __m128i {
+    debug_assert!(have_pclmulqdq());
     debug_assert!(blocks.len() % BLOCK_SIZE == 0);
 
     let mut blocks = blocks.chunks_exact(BLOCK_SIZE * pow.len());
@@ -164,9 +194,9 @@ pub(crate) unsafe fn polymul_series_asm(
             ($i:expr) => {
                 let mut y = _mm_loadu_si128((&chunk[$i * BLOCK_SIZE..]).as_ptr() as *const __m128i);
                 if $i == 0 {
-                    y = _mm_xor_si128(y, acc.0); // fold in accumulator
+                    y = _mm_xor_si128(y, acc); // fold in accumulator
                 }
-                let x = _mm_loadu_si128(ptr::addr_of!(pow[$i].0));
+                let x = _mm_loadu_si128(ptr::addr_of!(pow[$i]));
                 let (hh, mm, ll) = karatsuba1(x, y);
                 h = _mm_xor_si128(h, hh);
                 m = _mm_xor_si128(m, mm);
@@ -183,13 +213,15 @@ pub(crate) unsafe fn polymul_series_asm(
         karatsuba_xor!(0);
 
         let (h, l) = karatsuba2(h, m, l);
-        acc = FieldElement(mont_reduce(h, l));
+        acc = mont_reduce(h, l);
     }
 
     // Handle singles.
     for block in blocks.remainder().chunks_exact(BLOCK_SIZE) {
-        let y = FieldElement::from_le_bytes(block);
-        acc = (acc ^ y) * pow[7];
+        let y = _mm_loadu_si128(block.as_ptr().cast());
+        // acc = (acc ^ y) * pow[7];
+        acc = _mm_xor_si128(acc, y);
+        acc = polymul_asm(acc, pow[7]);
     }
 
     acc
@@ -197,7 +229,7 @@ pub(crate) unsafe fn polymul_series_asm(
 
 /// Karatsuba decomposition for `x*y`.
 #[inline]
-#[target_feature(enable = "pclmulqdq")]
+#[target_feature(enable = "sse2,pclmulqdq")]
 unsafe fn karatsuba1(x: __m128i, y: __m128i) -> (__m128i, __m128i, __m128i) {
     // First Karatsuba step: decompose x and y.
     //
@@ -216,7 +248,7 @@ unsafe fn karatsuba1(x: __m128i, y: __m128i) -> (__m128i, __m128i, __m128i) {
 
 /// Karatsuba combine.
 #[inline]
-#[target_feature(enable = "pclmulqdq")]
+#[target_feature(enable = "sse2,pclmulqdq")]
 unsafe fn karatsuba2(h: __m128i, m: __m128i, l: __m128i) -> (__m128i, __m128i) {
     // Second Karatsuba step: combine into a 2n-bit product.
     //
@@ -255,8 +287,11 @@ unsafe fn karatsuba2(h: __m128i, m: __m128i, l: __m128i) -> (__m128i, __m128i) {
     (x23, x01)
 }
 
+/// # Safety
+///
+/// The SSE2 and pclmulqdq target features must be enavled.
 #[inline]
-#[target_feature(enable = "pclmulqdq")]
+#[target_feature(enable = "sse2,pclmulqdq")]
 unsafe fn mont_reduce(x23: __m128i, x01: __m128i) -> __m128i {
     // Perform the Montgomery reduction over the 256-bit X.
     //    [A1:A0] = X0 • poly
@@ -272,76 +307,24 @@ unsafe fn mont_reduce(x23: __m128i, x01: __m128i) -> __m128i {
     _mm_xor_si128(x23, _mm_xor_si128(c, b))
 }
 
-/*
-#[target_feature(enable = "pclmulqdq")]
-unsafe fn mul(x: __m128i, y: __m128i) -> __m128i {
-    let y = _mm_xor_si128(y, x);
-
-    let x0 = x;
-    let x1 = _mm_shuffle_epi32(x, 0x0E);
-    let x2 = _mm_xor_si128(x0, x1);
-    let y0 = y;
-
-    // Multiply values partitioned to 64-bit parts
-    let y1 = _mm_shuffle_epi32(y, 0x0E);
-    let y2 = _mm_xor_si128(y0, y1);
-    let t0 = _mm_clmulepi64_si128(y0, x0, 0x00);
-    let t1 = _mm_clmulepi64_si128(y, x, 0x11);
-    let t2 = _mm_clmulepi64_si128(y2, x2, 0x00);
-    let t2 = _mm_xor_si128(t2, _mm_xor_si128(t0, t1));
-    let v0 = t0;
-    let v1 = _mm_xor_si128(_mm_shuffle_epi32(t0, 0x0E), t2);
-    let v2 = _mm_xor_si128(t1, _mm_shuffle_epi32(t2, 0x0E));
-    let v3 = _mm_shuffle_epi32(t1, 0x0E);
-
-    // Polynomial reduction
-    let v2 = xor5(
-        v2,
-        v0,
-        _mm_srli_epi64(v0, 1),
-        _mm_srli_epi64(v0, 2),
-        _mm_srli_epi64(v0, 7),
-    );
-
-    let v1 = xor4(
-        v1,
-        _mm_slli_epi64(v0, 63),
-        _mm_slli_epi64(v0, 62),
-        _mm_slli_epi64(v0, 57),
-    );
-
-    let v3 = xor5(
-        v3,
-        v1,
-        _mm_srli_epi64(v1, 1),
-        _mm_srli_epi64(v1, 2),
-        _mm_srli_epi64(v1, 7),
-    );
-
-    let v2 = xor4(
-        v2,
-        _mm_slli_epi64(v1, 63),
-        _mm_slli_epi64(v1, 62),
-        _mm_slli_epi64(v1, 57),
-    );
-
-    _mm_unpacklo_epi64(v2, v3)
-}
-*/
-
 /// Multiplies the low bits in `a` and `b`.
-#[inline(always)]
+///
+/// # Safety
+///
+/// The SSE2 and pclmulqdq target features must be enavled.
+#[inline]
+#[target_feature(enable = "sse2,pclmulqdq")]
 unsafe fn pmull(a: __m128i, b: __m128i) -> __m128i {
     _mm_clmulepi64_si128(a, b, 0x00)
 }
 
 /// Multiplies the high bits in `a` and `b`.
-#[inline(always)]
+///
+/// # Safety
+///
+/// The SSE2 and pclmulqdq target features must be enavled.
+#[inline]
+#[target_feature(enable = "sse2,pclmulqdq")]
 unsafe fn pmull2(a: __m128i, b: __m128i) -> __m128i {
     _mm_clmulepi64_si128(a, b, 0x11)
-}
-
-#[cfg(test)]
-pub(crate) unsafe fn gf128_mul(x: u64, y: u64) -> FieldElement {
-    generic::gf128_mul(x, y).into()
 }
