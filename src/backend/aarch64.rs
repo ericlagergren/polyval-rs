@@ -1,4 +1,4 @@
-//! The AArch64 implementation.
+//! AArch64 implementation.
 
 #![cfg(all(
     not(feature = "soft"),
@@ -9,7 +9,7 @@
 use core::{
     arch::aarch64::{
         uint8x16_t, uint8x16x4_t, vdupq_n_u8, veorq_u8, vextq_u8, vgetq_lane_u64, vld1q_u8,
-        vld1q_u8_x4, vmull_p64, vreinterpretq_u64_u8, vreinterpretq_u8_p128, vrev64q_u8, vst1q_u8,
+        vld1q_u8_x4, vmull_p64, vreinterpretq_u64_u8, vreinterpretq_u8_p128, vst1q_u8,
     },
     ops::{BitXor, BitXorAssign, Mul, MulAssign},
 };
@@ -30,29 +30,17 @@ pub(crate) struct FieldElement(uint8x16_t);
 
 impl FieldElement {
     pub fn from_le_bytes(data: &[u8; BLOCK_SIZE]) -> Self {
-        // SAFETY: This intrinsic requires the `neon` target feature,
-        // which we have.
-        let mut fe = unsafe { vld1q_u8(data.as_ptr()) };
-        if cfg!(target_endian = "big") {
-            // SAFETY: This intrinsic requires the `neon` target
-            // feature, which we have.
-            fe = unsafe { vrev64q_u8(fe) }
-        }
+        // SAFETY: This intrinsic requires the `neon` target
+        // feature, which we have.
+        let fe = unsafe { vld1q_u8(data.as_ptr()) };
         Self(fe)
     }
 
     pub fn to_le_bytes(self) -> [u8; BLOCK_SIZE] {
         let mut out = [0u8; BLOCK_SIZE];
-        let fe = if cfg!(target_endian = "big") {
-            // SAFETY: This intrinsic requires the `neon` target
-            // feature, which we have.
-            unsafe { vrev64q_u8(self.0) }
-        } else {
-            self.0
-        };
         // SAFETY: This intrinsic requires the `neon` target
         // feature, which we have.
-        unsafe { vst1q_u8(out.as_mut_ptr(), fe) }
+        unsafe { vst1q_u8(out.as_mut_ptr(), self.0) }
         out
     }
 

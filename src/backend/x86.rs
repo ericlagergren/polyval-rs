@@ -1,4 +1,4 @@
-//! The x86 implementation.
+//! x86/x86_64 implementation.
 
 #![cfg(all(
     not(feature = "soft"),
@@ -9,6 +9,7 @@
 use core::{
     ops::{BitXor, BitXorAssign, Mul, MulAssign},
     ptr,
+    sync::atomic::{AtomicU32, Ordering},
 };
 
 use cfg_if::cfg_if;
@@ -24,22 +25,51 @@ cfg_if! {
     }
 }
 use imp::{
-    __m128i, _mm_castps_si128, _mm_castsi128_ps, _mm_clmulepi64_si128, _mm_loadu_si128,
-    _mm_movehl_ps, _mm_setzero_si128, _mm_shuffle_epi32, _mm_shuffle_ps, _mm_storeu_si128,
-    _mm_unpacklo_epi64, _mm_xor_si128,
+    CpuidResult, __cpuid, __m128i, _mm_castps_si128, _mm_castsi128_ps, _mm_clmulepi64_si128,
+    _mm_loadu_si128, _mm_movehl_ps, _mm_setzero_si128, _mm_shuffle_epi32, _mm_shuffle_ps,
+    _mm_storeu_si128, _mm_unpacklo_epi64, _mm_xor_si128, _xgetbv, _XCR_XFEATURE_ENABLED_MASK,
 };
 
 // NB: `pclmulqdq` implies `sse2`.
 cpufeatures::new!(have_pclmulqdq, "pclmulqdq");
 
-pub(crate) fn have_pclmulqdq() -> bool {
-    // For some reason we can't detect pclmulqdq on an M1.
-    // However, Go has no problem doing this.
-    if cfg!(target_os = "macos") {
-        true
-    } else {
-        have_pclmulqdq::get()
+#[no_mangle]
+fn have_pclmulqdq() -> bool {
+    if !cfg!(all(target_os = "macos", target_arch = "x86_64")) {
+        return have_pclmulqdq::get();
     }
+
+    static HAVE_PCLMULQDQ: AtomicU32 = AtomicU32::new(u32::MAX);
+    let v = HAVE_PCLMULQDQ.load(Ordering::Relaxed);
+    if v == u32::MAX {
+        let ok = check_pclmulqdq();
+        HAVE_PCLMULQDQ.store(ok as u32, Ordering::Relaxed);
+        ok
+    } else {
+        v == 1
+    }
+}
+
+#[cold]
+fn check_pclmulqdq() -> bool {
+    // SAFETY: The leaf is valid.
+    let CpuidResult { ecx, .. } = unsafe { __cpuid(0x1) };
+    // Check for PCLMULQDQ.
+    if ecx & (1 << 1) == 0 {
+        return false;
+    }
+    // PCLMULQDQ is not a VEX-prefixed instruction, so we do not
+    // need to check for OSXSAVE Support.
+
+    // Check for OSXSAVE.
+    if ecx & (1 << 27) == 0 {
+        return false;
+    }
+    // SAFETY: The mask is valid and we've checked for OSXSAVE
+    // support.
+    let xcr0 = unsafe { _xgetbv(_XCR_XFEATURE_ENABLED_MASK) };
+    // Check for XMM support.
+    xcr0 & (1 << 1) == 1
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -148,6 +178,8 @@ impl Eq for FieldElement {}
 #[cfg(test)]
 impl PartialEq for FieldElement {
     fn eq(&self, other: &Self) -> bool {
+        use imp::{_mm_cmpeq_epi8, _mm_movemask_epi8};
+
         // SAFETY: This intrinsic requires the `sse2` target
         // feature, which we have.
         let v = unsafe { _mm_movemask_epi8(_mm_cmpeq_epi8(self.0, other.0)) };
@@ -351,4 +383,22 @@ unsafe fn pmull2(a: __m128i, b: __m128i) -> __m128i {
     debug_assert!(have_pclmulqdq());
 
     _mm_clmulepi64_si128(a, b, 0x11)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cpuid() {
+        use raw_cpuid::CpuId;
+
+        let id = CpuId::new();
+        println!("vendor = {:?}", id.get_vendor_info());
+        println!("id = {id:?}");
+
+        println!("{}", have_pclmulqdq());
+
+        assert!(false);
+    }
 }
