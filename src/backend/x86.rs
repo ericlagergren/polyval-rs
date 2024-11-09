@@ -27,7 +27,7 @@ cfg_if! {
 use imp::{
     CpuidResult, __cpuid, __m128i, _mm_castps_si128, _mm_castsi128_ps, _mm_clmulepi64_si128,
     _mm_loadu_si128, _mm_movehl_ps, _mm_setzero_si128, _mm_shuffle_epi32, _mm_shuffle_ps,
-    _mm_storeu_si128, _mm_unpacklo_epi64, _mm_xor_si128, _xgetbv, _XCR_XFEATURE_ENABLED_MASK,
+    _mm_storeu_si128, _mm_unpacklo_epi64, _mm_xor_si128,
 };
 
 // NB: `pclmulqdq` implies `sse2`.
@@ -55,21 +55,10 @@ fn check_pclmulqdq() -> bool {
     // SAFETY: The leaf is valid.
     let CpuidResult { ecx, .. } = unsafe { __cpuid(0x1) };
     // Check for PCLMULQDQ.
-    if ecx & (1 << 1) == 0 {
-        return false;
-    }
+    //
     // PCLMULQDQ is not a VEX-prefixed instruction, so we do not
     // need to check for OSXSAVE Support.
-
-    // Check for OSXSAVE.
-    if ecx & (1 << 27) == 0 {
-        return false;
-    }
-    // SAFETY: The mask is valid and we've checked for OSXSAVE
-    // support.
-    let xcr0 = unsafe { _xgetbv(_XCR_XFEATURE_ENABLED_MASK) };
-    // Check for XMM support.
-    xcr0 & (1 << 1) == 1
+    ecx & (1 << 1) == 1
 }
 
 #[derive(Copy, Clone, Debug)]
