@@ -9,7 +9,7 @@
 use core::{
     ops::{BitXor, BitXorAssign, Mul, MulAssign},
     ptr,
-    sync::atomic::{AtomicU32, Ordering},
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use cfg_if::cfg_if;
@@ -33,32 +33,32 @@ use imp::{
 // NB: `pclmulqdq` implies `sse2`.
 cpufeatures::new!(have_pclmulqdq, "pclmulqdq");
 
-#[no_mangle]
 fn have_pclmulqdq() -> bool {
     if !cfg!(all(target_os = "macos", target_arch = "x86_64")) {
         return have_pclmulqdq::get();
     }
 
-    static HAVE_PCLMULQDQ: AtomicU32 = AtomicU32::new(u32::MAX);
     let v = HAVE_PCLMULQDQ.load(Ordering::Relaxed);
-    if v == u32::MAX {
-        let ok = check_pclmulqdq();
-        HAVE_PCLMULQDQ.store(ok as u32, Ordering::Relaxed);
-        ok
+    if v == usize::MAX {
+        init_have_pclmulqdq()
     } else {
         v == 1
     }
 }
 
+static HAVE_PCLMULQDQ: AtomicUsize = AtomicUsize::new(usize::MAX);
+
 #[cold]
-fn check_pclmulqdq() -> bool {
+fn init_have_pclmulqdq() -> bool {
     // SAFETY: The leaf is valid.
     let CpuidResult { ecx, .. } = unsafe { __cpuid(0x1) };
     // Check for PCLMULQDQ.
     //
     // PCLMULQDQ is not a VEX-prefixed instruction, so we do not
     // need to check for OSXSAVE Support.
-    ecx & (1 << 1) == 1
+    let ok = ecx & (1 << 1) == 1;
+    HAVE_PCLMULQDQ.store(ok as usize, Ordering::Relaxed);
+    ok
 }
 
 #[derive(Copy, Clone, Debug)]
