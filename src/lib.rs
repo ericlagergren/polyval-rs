@@ -30,6 +30,7 @@
 )]
 
 mod backend;
+pub mod experimental;
 mod poly;
 mod tests;
 

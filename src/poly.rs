@@ -1,4 +1,4 @@
-use core::{error, fmt};
+use core::{error, fmt, slice};
 
 use subtle::{Choice, ConstantTimeEq};
 #[cfg(feature = "zeroize")]
@@ -9,14 +9,10 @@ use super::backend::FieldElement;
 /// The size in bytes of a POLYVAL key.
 pub const KEY_SIZE: usize = 16;
 
-/// The size in bytes of a POLYVAL digest.
-pub const SIZE: usize = 16;
-
 /// The size in bytes of a POLYVAL block.
 pub const BLOCK_SIZE: usize = 16;
 
-/// The length of the input is not divisible by
-/// [`BLOCK_SIZE`].
+/// The length of the input is not divisible by [`BLOCK_SIZE`].
 #[derive(Copy, Clone, Debug)]
 pub struct InvalidInputLength;
 
@@ -30,8 +26,7 @@ impl error::Error for InvalidInputLength {}
 
 /// A POLYVAL key.
 #[derive(Clone)]
-#[cfg_attr(feature = "zeroize", derive(Zeroize, ZeroizeOnDrop))]
-pub struct Key([u8; KEY_SIZE]);
+pub struct Key(FieldElement);
 
 impl Key {
     const ZERO: &[u8; KEY_SIZE] = &[0u8; KEY_SIZE];
@@ -39,7 +34,7 @@ impl Key {
     /// Creates a POLYVAL key.
     ///
     /// It returns `None` if the key is all zero.
-    pub fn new(key: [u8; KEY_SIZE]) -> Option<Self> {
+    pub fn new(key: &[u8; KEY_SIZE]) -> Option<Self> {
         if bool::from(key.ct_eq(Self::ZERO)) {
             None
         } else {
@@ -54,8 +49,25 @@ impl Key {
     /// Only use this method if `key` is known to be non-zero.
     /// Using an all zero key fixes the POLYVAL to zero,
     /// regardless of the input.
-    pub const fn new_unchecked(key: [u8; KEY_SIZE]) -> Self {
-        Self(key)
+    pub fn new_unchecked(key: &[u8; KEY_SIZE]) -> Self {
+        Self(FieldElement::from_le_bytes(key))
+    }
+}
+
+#[cfg(feature = "zeroize")]
+#[cfg_attr(docsrs, doc(cfg(feature = "zeroize")))]
+impl ZeroizeOnDrop for Key {}
+
+impl Drop for Key {
+    fn drop(&mut self) {
+        #[cfg(feature = "zeroize")]
+        {
+            self.0.zeroize();
+        }
+        #[cfg(not(feature = "zeroize"))]
+        {
+            self.0 ^= self.0;
+        }
     }
 }
 
@@ -81,8 +93,6 @@ impl fmt::Debug for Key {
 /// For more information on POLYVAL, see [RFC 8452].
 ///
 /// [RFC 8452]: https://datatracker.ietf.org/doc/html/rfc8452
-#[derive(Clone)]
-#[cfg_attr(feature = "zeroize", derive(Zeroize, ZeroizeOnDrop))]
 pub struct Polyval {
     /// The running state.
     pub(crate) y: FieldElement,
@@ -95,7 +105,7 @@ impl Polyval {
     /// Creates an instance of POLYVAL.
     pub fn new(key: &Key) -> Self {
         let pow = {
-            let h = FieldElement::from_le_bytes(&key.0);
+            let h = key.0;
             let mut prev = h;
             let mut pow: [FieldElement; 8] = Default::default();
             for (i, v) in pow.iter_mut().rev().enumerate() {
@@ -113,28 +123,27 @@ impl Polyval {
         }
     }
 
+    /// Writes a single block to the running hash.
+    pub fn update_block(&mut self, block: &[u8; BLOCK_SIZE]) {
+        let fe = FieldElement::from_le_bytes(block);
+        self.y = (self.y ^ fe) * self.pow[7];
+    }
+
     /// Writes one or more blocks to the running hash.
-    ///
-    /// It is an error if `blocks` is not a multiple of
-    /// [`BLOCK_SIZE`].
-    pub fn update(&mut self, blocks: &[u8]) -> Result<(), InvalidInputLength> {
-        if blocks.len() % BLOCK_SIZE != 0 {
-            Err(InvalidInputLength)
-        } else {
-            self.update_blocks(blocks);
-            Ok(())
-        }
+    pub fn update(&mut self, blocks: &[[u8; BLOCK_SIZE]]) {
+        // TODO(eric): Should the backends use `&[[u8; 16]]`
+        // instead of `&[u8]`?
+        self.y = self.y.mul_series(&self.pow, blocks.as_flattened());
     }
 
     /// Writes one or more blocks to the running hash.
     ///
-    /// If the length of `blocks` is not a multiple of
-    /// [`BLOCK_SIZE`], it's padded with zeros.
+    /// If the length of `blocks` is non-zero and is not
+    /// a multiple of [`BLOCK_SIZE`], it's padded with zeros.
     pub fn update_padded(&mut self, blocks: &[u8]) {
-        let n = (blocks.len() / BLOCK_SIZE) * BLOCK_SIZE;
-        let (head, tail) = blocks.split_at(n);
+        let (head, tail) = as_blocks(blocks);
         if !head.is_empty() {
-            self.update_blocks(head);
+            self.update(head);
         }
         if !tail.is_empty() {
             let mut block = [0u8; BLOCK_SIZE];
@@ -143,11 +152,12 @@ impl Polyval {
                 reason = "The compiler can prove the slice is in bounds."
             )]
             block[..tail.len()].copy_from_slice(tail);
-            self.update_blocks(&block);
+            self.update_block(&block);
         }
     }
 
     /// Returns the current authentication tag.
+    #[inline]
     pub fn tag(self) -> Tag {
         Tag(self.y.to_le_bytes())
     }
@@ -159,9 +169,38 @@ impl Polyval {
     }
 }
 
-impl Polyval {
-    fn update_blocks(&mut self, blocks: &[u8]) {
-        self.y = self.y.mul_series(&self.pow, blocks);
+impl Clone for Polyval {
+    fn clone(&self) -> Self {
+        Self {
+            y: self.y,
+            pow: self.pow,
+        }
+    }
+
+    fn clone_from(&mut self, other: &Self) {
+        self.y = other.y;
+        self.pow = other.pow;
+    }
+}
+
+#[cfg(feature = "zeroize")]
+#[cfg_attr(docsrs, doc(cfg(feature = "zeroize")))]
+impl ZeroizeOnDrop for Polyval {}
+
+impl Drop for Polyval {
+    fn drop(&mut self) {
+        #[cfg(feature = "zeroize")]
+        {
+            self.y.zeroize();
+            self.pow.zeroize();
+        }
+        #[cfg(not(feature = "zeroize"))]
+        {
+            self.y ^= self.y;
+            for h in &mut self.pow {
+                *h ^= *h;
+            }
+        }
     }
 }
 
@@ -173,7 +212,7 @@ impl fmt::Debug for Polyval {
 
 /// An authentication tag.
 #[derive(Copy, Clone, Debug)]
-pub struct Tag([u8; 16]);
+pub struct Tag(pub(crate) [u8; 16]);
 
 impl ConstantTimeEq for Tag {
     fn ct_eq(&self, other: &Self) -> Choice {
@@ -185,6 +224,20 @@ impl From<Tag> for [u8; 16] {
     fn from(tag: Tag) -> Self {
         tag.0
     }
+}
+
+// See https://doc.rust-lang.org/std/primitive.slice.html#method.as_chunks
+pub(crate) const fn as_blocks(blocks: &[u8]) -> (&[[u8; BLOCK_SIZE]], &[u8]) {
+    let len_rounded_down = (blocks.len() / BLOCK_SIZE) * BLOCK_SIZE;
+    // SAFETY: The rounded-down value is always the same or
+    // smaller than the original length, and thus must be
+    // in-bounds of the slice.
+    let (head, tail) = unsafe { blocks.split_at_unchecked(len_rounded_down) };
+    let new_len = head.len() / BLOCK_SIZE;
+    // SAFETY: We cast a slice of `new_len * N` elements into
+    // a slice of `new_len` many `N` elements chunks.
+    let head = unsafe { slice::from_raw_parts(head.as_ptr().cast(), new_len) };
+    (head, tail)
 }
 
 #[cfg(test)]

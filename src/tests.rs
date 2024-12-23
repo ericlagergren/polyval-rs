@@ -2,7 +2,7 @@
 
 use serde::Deserialize;
 
-use crate::*;
+use crate::poly::{as_blocks, Key, Polyval, BLOCK_SIZE};
 
 fn unhex(s: &str) -> Vec<u8> {
     hex::decode(s).expect("should be valid hex")
@@ -91,10 +91,10 @@ fn test_rfc_vectors() {
         let h = unhex(tc.h);
         let x = unhex(tc.x);
         let r = unhex(tc.r);
-        let k = Key::new_unchecked(h.try_into().expect("should be `KEY_SIZE` bytes"));
+        let k = Key::new_unchecked(&h.try_into().expect("should be `KEY_SIZE` bytes"));
         let mut p = Polyval::new(&k);
         p.update_padded(&x);
-        let got: [u8; 16] = p.clone().tag().into();
+        let got: [u8; 16] = p.tag().into();
         let want = &r[..];
         assert_eq!(got, want, "#{i}");
     }
@@ -160,11 +160,12 @@ fn test_vectors() {
                 tc.description
             )
         });
-        let key =
-            Key::new(b).unwrap_or_else(|| panic!("#{i}: {} should be a valid key", tc.description));
+        let key = Key::new_unchecked(&b);
         let mut p = Polyval::new(&key);
-        p.update(&tc.input.message_hex[..])
-            .unwrap_or_else(|_| panic!("#{i}: {} should block sized", tc.description));
+        let (blocks, []) = as_blocks(&tc.input.message_hex) else {
+            panic!("#{i}: {} should block sized", tc.description);
+        };
+        p.update(blocks);
         let got: [u8; 16] = p.clone().tag().into();
         let want = &tc.hash_hex[..];
         assert_eq!(got, want, "#{i}: {}", tc.description);

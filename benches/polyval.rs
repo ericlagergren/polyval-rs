@@ -4,7 +4,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 use polyhash::*;
 
 fn benchmark(c: &mut Criterion) {
-    let key = Key::new_unchecked([1u8; 16]);
+    let key = Key::new_unchecked(&[1u8; 16]);
     let mut m = Polyval::new(&key);
 
     let sizes = [16, 64, 128, 256, 512, 1024, 2048, 4096, 8192];

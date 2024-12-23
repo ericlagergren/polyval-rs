@@ -13,6 +13,8 @@ use core::{
 };
 
 use cfg_if::cfg_if;
+#[cfg(feature = "zeroize")]
+use zeroize::Zeroize;
 
 use super::generic;
 use crate::poly::BLOCK_SIZE;
@@ -30,14 +32,11 @@ use imp::{
     _mm_storeu_si128, _mm_unpacklo_epi64, _mm_xor_si128,
 };
 
-// NB: `pclmulqdq` implies `sse2`.
-cpufeatures::new!(have_pclmulqdq, "pclmulqdq");
+// TODO(eric): Enable this pending https://github.com/RustCrypto/utils/issues/1129
+// // NB: `pclmulqdq` implies `sse2`.
+// cpufeatures::new!(have_pclmulqdq, "pclmulqdq");
 
 fn have_pclmulqdq() -> bool {
-    if !cfg!(all(target_os = "macos", target_arch = "x86_64")) {
-        return have_pclmulqdq::get();
-    }
-
     let v = HAVE_PCLMULQDQ.load(Ordering::Relaxed);
     if v == usize::MAX {
         init_have_pclmulqdq()
@@ -153,11 +152,9 @@ impl MulAssign for FieldElement {
 }
 
 #[cfg(feature = "zeroize")]
-impl zeroize::Zeroize for FieldElement {
+impl Zeroize for FieldElement {
     fn zeroize(&mut self) {
-        // SAFETY: This intrinsic requires the `sse2` target
-        // feature, which we have.
-        unsafe { self.0 = _mm_xor_si128(self.0, self.0) }
+        self.0.zeroize();
     }
 }
 
@@ -372,22 +369,4 @@ unsafe fn pmull2(a: __m128i, b: __m128i) -> __m128i {
     debug_assert!(have_pclmulqdq());
 
     _mm_clmulepi64_si128(a, b, 0x11)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_cpuid() {
-        use raw_cpuid::CpuId;
-
-        let id = CpuId::new();
-        println!("vendor = {:?}", id.get_vendor_info());
-        println!("id = {id:?}");
-
-        println!("{}", have_pclmulqdq());
-
-        assert!(false);
-    }
 }

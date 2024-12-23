@@ -14,7 +14,6 @@ use zeroize::Zeroize;
 use crate::poly::BLOCK_SIZE;
 
 #[derive(Copy, Clone, Debug, Default)]
-#[cfg_attr(feature = "zeroize", derive(Zeroize))]
 #[cfg_attr(test, derive(Eq, PartialEq))]
 #[repr(transparent)]
 pub(crate) struct FieldElement(u128);
@@ -86,6 +85,13 @@ impl Shr<u32> for FieldElement {
 
     fn shr(self, rhs: u32) -> Self::Output {
         Self(self.0 >> rhs)
+    }
+}
+
+#[cfg(feature = "zeroize")]
+impl Zeroize for FieldElement {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
     }
 }
 
@@ -201,7 +207,7 @@ fn polymul_series(
 }
 
 /// Returns the constant time 128-bit product of `x` and `y` in
-/// GF(2¹²⁸).
+/// `GF(2¹²⁸)`.
 ///
 /// The idea comes from [Thomas Pornin]'s constant-time blog post
 /// with 64-bit fixes from [Tim Taubert]'s blog post on formally

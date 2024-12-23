@@ -14,6 +14,9 @@ use core::{
     ops::{BitXor, BitXorAssign, Mul, MulAssign},
 };
 
+#[cfg(feature = "zeroize")]
+use zeroize::Zeroize;
+
 use super::generic;
 use crate::poly::BLOCK_SIZE;
 
@@ -29,6 +32,7 @@ fn have_aes() -> bool {
 pub(crate) struct FieldElement(uint8x16_t);
 
 impl FieldElement {
+    #[inline]
     pub fn from_le_bytes(data: &[u8; BLOCK_SIZE]) -> Self {
         // SAFETY: This intrinsic requires the `neon` target
         // feature, which we have.
@@ -36,6 +40,7 @@ impl FieldElement {
         Self(fe)
     }
 
+    #[inline]
     pub fn to_le_bytes(self) -> [u8; BLOCK_SIZE] {
         let mut out = [0u8; BLOCK_SIZE];
         // SAFETY: This intrinsic requires the `neon` target
@@ -68,9 +73,10 @@ impl FieldElement {
 }
 
 impl Default for FieldElement {
+    #[inline]
     fn default() -> Self {
-        // SAFETY: This intrinsic requires the `neon` target feature,
-        // which we have.
+        // SAFETY: This intrinsic requires the `neon` target
+        // feature, which we have.
         let fe = unsafe { vdupq_n_u8(0) };
         Self(fe)
     }
@@ -79,6 +85,7 @@ impl Default for FieldElement {
 impl BitXor for FieldElement {
     type Output = Self;
 
+    #[inline]
     fn bitxor(self, rhs: Self) -> Self {
         // SAFETY: This intrinsic requires the `neon` target
         // feature, which we have.
@@ -87,6 +94,7 @@ impl BitXor for FieldElement {
     }
 }
 impl BitXorAssign for FieldElement {
+    #[inline]
     fn bitxor_assign(&mut self, rhs: Self) {
         // SAFETY: This intrinsic requires the `neon` target
         // feature, which we have.
@@ -97,6 +105,7 @@ impl BitXorAssign for FieldElement {
 impl Mul for FieldElement {
     type Output = Self;
 
+    #[inline]
     fn mul(self, rhs: Self) -> Self {
         if have_aes() {
             // SAFETY: `polymul_asm` requires the `neon` and
@@ -110,17 +119,16 @@ impl Mul for FieldElement {
     }
 }
 impl MulAssign for FieldElement {
+    #[inline]
     fn mul_assign(&mut self, rhs: Self) {
         *self = *self * rhs;
     }
 }
 
 #[cfg(feature = "zeroize")]
-impl zeroize::Zeroize for FieldElement {
+impl Zeroize for FieldElement {
     fn zeroize(&mut self) {
-        // SAFETY: This intrinsic requires the `neon` target
-        // feature, which we have.
-        self.0 = unsafe { veorq_u8(self.0, self.0) };
+        self.0.zeroize();
     }
 }
 
