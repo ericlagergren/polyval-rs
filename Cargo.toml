@@ -1,0 +1,79 @@
+[package]
+name = "polyhash"
+version = "0.1.3"
+description = """
+POLYVAL per RFC 8452.
+"""
+edition = "2021"
+license = "BSD-3-Clause"
+readme = "README.md"
+documentation = "https://docs.rs/polyhash"
+repository = "https://github.com/ericlagergren/polyval-rs"
+keywords = [ "polyval", "universal-hash" ]
+categories = [ "cryptography", "no-std", "no-std::no-alloc" ]
+
+[lints.rust]
+missing_docs = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+alloc_instead_of_core = "warn"
+arithmetic_side_effects = "warn"
+cast_lossless = "warn"
+cast_possible_wrap = "warn"
+cast_precision_loss = "warn"
+cast_sign_loss = "warn"
+expect_used = "warn"
+implicit_saturating_sub = "warn"
+indexing_slicing = "warn"
+missing_panics_doc = "warn"
+panic = "warn"
+ptr_as_ptr = "warn"
+string_slice = "warn"
+transmute_ptr_to_ptr = "warn"
+undocumented_unsafe_blocks = "warn"
+unwrap_used = "warn"
+wildcard_imports = "warn"
+
+[features]
+default = []
+
+# Experimental features NOT covered by semver.
+experimental = []
+
+# Enable the software-only backend.
+soft = []
+
+# Enable `std` support.
+std = []
+
+# Enable zeroize support.
+zeroize = ["dep:zeroize"]
+
+[dependencies]
+cfg-if = { version = "1", default-features = false }
+cpufeatures = { version = ">=0.2.15", default-features = false }
+subtle = { version = "2.5", default-features = false }
+zeroize = { version = "1.8", default-features = false, optional = true }
+
+[dev-dependencies]
+polyhash = { path = ".", features = ["experimental"] }
+
+hex = { version = "0.4", features = ["serde"] }
+criterion = { version = "0.5" }
+rand = { version = "0.8", features = ["std_rng"] }
+serde_json = { version = "1" }
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+
+[[bench]]
+name = "polyval"
+harness = false
+
+[package.metadata.docs.rs]
+rustdoc-args = ["--cfg", "docsrs"]
+
+[package.metadata.cargo-all-features]
+always_include_features = []
