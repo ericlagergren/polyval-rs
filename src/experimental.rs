@@ -12,13 +12,13 @@ use super::backend::FieldElement;
 pub use super::poly::{Polyval, Tag, BLOCK_SIZE, KEY_SIZE};
 
 impl Polyval {
-    /// TODO
+    /// Exports the current state.
     #[inline]
     pub fn export(&self) -> State {
         State { y: self.y }
     }
 
-    /// TODO
+    /// Resets the hash to `state`.
     #[inline]
     pub fn reset(&mut self, state: &State) {
         self.y = state.y;

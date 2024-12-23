@@ -12,7 +12,31 @@ repository = "https://github.com/ericlagergren/polyval-rs"
 keywords = [ "polyval", "universal-hash" ]
 categories = [ "cryptography", "no-std", "no-std::no-alloc" ]
 
-[lib]
+[lints.rust]
+missing_docs = "warn"
+rust_2018_idioms = { level = "warn", priority = -1 }
+unsafe_op_in_unsafe_fn = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+alloc_instead_of_core = "warn"
+arithmetic_side_effects = "warn"
+cast_lossless = "warn"
+cast_possible_wrap = "warn"
+cast_precision_loss = "warn"
+cast_sign_loss = "warn"
+expect_used = "warn"
+implicit_saturating_sub = "warn"
+indexing_slicing = "warn"
+missing_panics_doc = "warn"
+panic = "warn"
+ptr_as_ptr = "warn"
+string_slice = "warn"
+transmute_ptr_to_ptr = "warn"
+undocumented_unsafe_blocks = "warn"
+unwrap_used = "warn"
+wildcard_imports = "warn"
 
 [features]
 default = []
@@ -31,11 +55,9 @@ zeroize = ["dep:zeroize"]
 
 [dependencies]
 cfg-if = { version = "1", default-features = false }
+cpufeatures = { version = ">=0.2.15", default-features = false }
 subtle = { version = "2.5", default-features = false }
 zeroize = { version = "1.8", default-features = false, optional = true }
-
-[target.'cfg(target_arch = "aarch64")'.dependencies]
-cpufeatures = { version = "0.2.14", default-features = false }
 
 [dev-dependencies]
 polyhash = { path = ".", features = ["experimental"] }
@@ -51,7 +73,6 @@ name = "polyval"
 harness = false
 
 [package.metadata.docs.rs]
-all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [package.metadata.cargo-all-features]

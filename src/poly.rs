@@ -49,6 +49,7 @@ impl Key {
     /// Only use this method if `key` is known to be non-zero.
     /// Using an all zero key fixes the POLYVAL to zero,
     /// regardless of the input.
+    #[inline]
     pub fn new_unchecked(key: &[u8; KEY_SIZE]) -> Self {
         Self(FieldElement::from_le_bytes(key))
     }
@@ -103,6 +104,7 @@ pub struct Polyval {
 
 impl Polyval {
     /// Creates an instance of POLYVAL.
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn new(key: &Key) -> Self {
         let pow = {
             let h = key.0;
@@ -124,6 +126,7 @@ impl Polyval {
     }
 
     /// Writes a single block to the running hash.
+    #[allow(clippy::arithmetic_side_effects)]
     pub fn update_block(&mut self, block: &[u8; BLOCK_SIZE]) {
         let fe = FieldElement::from_le_bytes(block);
         self.y = (self.y ^ fe) * self.pow[7];
@@ -228,6 +231,7 @@ impl From<Tag> for [u8; 16] {
 
 // See https://doc.rust-lang.org/std/primitive.slice.html#method.as_chunks
 pub(crate) const fn as_blocks(blocks: &[u8]) -> (&[[u8; BLOCK_SIZE]], &[u8]) {
+    #[allow(clippy::arithmetic_side_effects)]
     let len_rounded_down = (blocks.len() / BLOCK_SIZE) * BLOCK_SIZE;
     // SAFETY: The rounded-down value is always the same or
     // smaller than the original length, and thus must be

@@ -5,11 +5,11 @@
     any(target_arch = "x86", target_arch = "x86_64"),
     target_feature = "sse2",
 ))]
+#![allow(clippy::undocumented_unsafe_blocks, reason = "Too many unsafe blocks.")]
 
 use core::{
     ops::{BitXor, BitXorAssign, Mul, MulAssign},
     ptr,
-    sync::atomic::{AtomicUsize, Ordering},
 };
 
 use cfg_if::cfg_if;
@@ -27,37 +27,16 @@ cfg_if! {
     }
 }
 use imp::{
-    CpuidResult, __cpuid, __m128i, _mm_castps_si128, _mm_castsi128_ps, _mm_clmulepi64_si128,
-    _mm_loadu_si128, _mm_movehl_ps, _mm_setzero_si128, _mm_shuffle_epi32, _mm_shuffle_ps,
-    _mm_storeu_si128, _mm_unpacklo_epi64, _mm_xor_si128,
+    __m128i, _mm_castps_si128, _mm_castsi128_ps, _mm_clmulepi64_si128, _mm_loadu_si128,
+    _mm_movehl_ps, _mm_setzero_si128, _mm_shuffle_epi32, _mm_shuffle_ps, _mm_storeu_si128,
+    _mm_unpacklo_epi64, _mm_xor_si128,
 };
 
-// TODO(eric): Enable this pending https://github.com/RustCrypto/utils/issues/1129
-// // NB: `pclmulqdq` implies `sse2`.
-// cpufeatures::new!(have_pclmulqdq, "pclmulqdq");
+// NB: `pclmulqdq` implies `sse2`.
+cpufeatures::new!(have_pclmulqdq, "pclmulqdq");
 
 fn have_pclmulqdq() -> bool {
-    let v = HAVE_PCLMULQDQ.load(Ordering::Relaxed);
-    if v == usize::MAX {
-        init_have_pclmulqdq()
-    } else {
-        v == 1
-    }
-}
-
-static HAVE_PCLMULQDQ: AtomicUsize = AtomicUsize::new(usize::MAX);
-
-#[cold]
-fn init_have_pclmulqdq() -> bool {
-    // SAFETY: The leaf is valid.
-    let CpuidResult { ecx, .. } = unsafe { __cpuid(0x1) };
-    // Check for PCLMULQDQ.
-    //
-    // PCLMULQDQ is not a VEX-prefixed instruction, so we do not
-    // need to check for OSXSAVE Support.
-    let ok = ecx & (1 << 1) == 1;
-    HAVE_PCLMULQDQ.store(ok as usize, Ordering::Relaxed);
-    ok
+    have_pclmulqdq::get()
 }
 
 #[derive(Copy, Clone, Debug)]
@@ -133,6 +112,8 @@ impl BitXorAssign for FieldElement {
 impl Mul for FieldElement {
     type Output = Self;
 
+    #[inline]
+    #[allow(clippy::arithmetic_side_effects)]
     fn mul(self, rhs: Self) -> Self {
         if have_pclmulqdq() {
             // SAFETY: `polymul_asm` requires the `sse2` and
@@ -146,6 +127,8 @@ impl Mul for FieldElement {
     }
 }
 impl MulAssign for FieldElement {
+    #[inline]
+    #[allow(clippy::arithmetic_side_effects)]
     fn mul_assign(&mut self, rhs: Self) {
         *self = *self * rhs;
     }
@@ -174,12 +157,14 @@ impl PartialEq for FieldElement {
 }
 
 impl From<FieldElement> for generic::FieldElement {
+    #[inline]
     fn from(fe: FieldElement) -> Self {
         Self::from_le_bytes(&fe.to_le_bytes())
     }
 }
 
 impl From<generic::FieldElement> for FieldElement {
+    #[inline]
     fn from(fe: generic::FieldElement) -> Self {
         Self::from_le_bytes(&fe.to_le_bytes())
     }
@@ -193,9 +178,11 @@ impl From<generic::FieldElement> for FieldElement {
 unsafe fn polymul_asm(x: __m128i, y: __m128i) -> __m128i {
     debug_assert!(have_pclmulqdq());
 
-    let (h, m, l) = karatsuba1(x, y);
-    let (h, l) = karatsuba2(h, m, l);
-    mont_reduce(h, l) // d
+    let (h, m, l) = unsafe { karatsuba1(x, y) };
+    let (h, l) = unsafe { karatsuba2(h, m, l) };
+    unsafe {
+        mont_reduce(h, l) // d
+    }
 }
 
 /// # Safety
@@ -212,9 +199,9 @@ pub(crate) unsafe fn polymul_series_asm(
     debug_assert!(blocks.len() % BLOCK_SIZE == 0);
 
     while let Some((chunk, rest)) = blocks.split_first_chunk::<{ BLOCK_SIZE * 8 }>() {
-        let mut h = _mm_setzero_si128();
-        let mut m = _mm_setzero_si128();
-        let mut l = _mm_setzero_si128();
+        let mut h = unsafe { _mm_setzero_si128() };
+        let mut m = unsafe { _mm_setzero_si128() };
+        let mut l = unsafe { _mm_setzero_si128() };
 
         macro_rules! karatsuba_xor {
             ($i:expr) => {
@@ -222,15 +209,15 @@ pub(crate) unsafe fn polymul_series_asm(
                     [$i * BLOCK_SIZE..($i * BLOCK_SIZE) + BLOCK_SIZE]
                     .try_into()
                     .expect("should be exactly `BLOCK_SIZE` bytes");
-                let mut y = _mm_loadu_si128(block.as_ptr().cast());
+                let mut y = unsafe { _mm_loadu_si128(block.as_ptr().cast()) };
                 if $i == 0 {
-                    y = _mm_xor_si128(y, acc); // fold in accumulator
+                    y = unsafe { _mm_xor_si128(y, acc) }; // fold in accumulator
                 }
-                let x = _mm_loadu_si128(ptr::addr_of!(pow[$i]));
-                let (hh, mm, ll) = karatsuba1(x, y);
-                h = _mm_xor_si128(h, hh);
-                m = _mm_xor_si128(m, mm);
-                l = _mm_xor_si128(l, ll);
+                let x = unsafe { _mm_loadu_si128(ptr::addr_of!(pow[$i])) };
+                let (hh, mm, ll) = unsafe { karatsuba1(x, y) };
+                h = unsafe { _mm_xor_si128(h, hh) };
+                m = unsafe { _mm_xor_si128(m, mm) };
+                l = unsafe { _mm_xor_si128(l, ll) };
             };
         }
         karatsuba_xor!(7);
@@ -242,17 +229,17 @@ pub(crate) unsafe fn polymul_series_asm(
         karatsuba_xor!(1);
         karatsuba_xor!(0);
 
-        let (h, l) = karatsuba2(h, m, l);
-        acc = mont_reduce(h, l);
+        let (h, l) = unsafe { karatsuba2(h, m, l) };
+        acc = unsafe { mont_reduce(h, l) };
         blocks = rest;
     }
 
     // Handle singles.
     while let Some((block, rest)) = blocks.split_first_chunk::<BLOCK_SIZE>() {
-        let y = _mm_loadu_si128(block.as_ptr().cast());
+        let y = unsafe { _mm_loadu_si128(block.as_ptr().cast()) };
         // acc = (acc ^ y) * pow[7];
-        acc = _mm_xor_si128(acc, y);
-        acc = polymul_asm(acc, pow[7]);
+        acc = unsafe { _mm_xor_si128(acc, y) };
+        acc = unsafe { polymul_asm(acc, pow[7]) };
         blocks = rest;
     }
 
@@ -271,12 +258,14 @@ unsafe fn karatsuba1(x: __m128i, y: __m128i) -> (__m128i, __m128i, __m128i) {
     //        M                                 H         L
     //
     // m = x.hi^x.lo * y.hi^y.lo
-    let m = pmull(
-        _mm_xor_si128(x, _mm_shuffle_epi32(x, 0xee)),
-        _mm_xor_si128(y, _mm_shuffle_epi32(y, 0xee)),
-    );
-    let h = pmull2(y, x); // h = x.hi * y.hi
-    let l = pmull(y, x); // l = x.lo * y.lo
+    let m = unsafe {
+        pmull(
+            _mm_xor_si128(x, _mm_shuffle_epi32(x, 0xee)),
+            _mm_xor_si128(y, _mm_shuffle_epi32(y, 0xee)),
+        )
+    };
+    let h = unsafe { pmull2(y, x) }; // h = x.hi * y.hi
+    let l = unsafe { pmull(y, x) }; // l = x.lo * y.lo
     (h, m, l)
 }
 
@@ -293,17 +282,19 @@ unsafe fn karatsuba2(h: __m128i, m: __m128i, l: __m128i) -> (__m128i, __m128i) {
     // l1 ^= m0      // = l1^(m0^l0^h0)
     // h0 ^= l0 ^ m1 // = h0^(l0^m1^l1^h1)
     // h1 ^= l1      // = h1^(l1^m0^l0^h0)
-    let t = {
+    let t = unsafe {
         //   {m0, m1} ^ {l1, h0}
         // = {m0^l1, m1^h0}
-        let t0 = _mm_xor_si128(
-            m,
-            _mm_castps_si128(_mm_shuffle_ps(
-                _mm_castsi128_ps(l),
-                _mm_castsi128_ps(h),
-                0x4e,
-            )),
-        );
+        let t0 = {
+            _mm_xor_si128(
+                m,
+                _mm_castps_si128(_mm_shuffle_ps(
+                    _mm_castsi128_ps(l),
+                    _mm_castsi128_ps(h),
+                    0x4e,
+                )),
+            )
+        };
 
         //   {h0, h1} ^ {l0, l1}
         // = {h0^l0, h1^l1}
@@ -315,10 +306,10 @@ unsafe fn karatsuba2(h: __m128i, m: __m128i, l: __m128i) -> (__m128i, __m128i) {
     };
 
     // {m0^l1^h0^l0, l0}
-    let x01 = _mm_unpacklo_epi64(l, t);
+    let x01 = unsafe { _mm_unpacklo_epi64(l, t) };
 
     // {h1, m1^h0^h1^l1}
-    let x23 = _mm_castps_si128(_mm_movehl_ps(_mm_castsi128_ps(h), _mm_castsi128_ps(t)));
+    let x23 = unsafe { _mm_castps_si128(_mm_movehl_ps(_mm_castsi128_ps(h), _mm_castsi128_ps(t))) };
 
     (x23, x01)
 }
@@ -338,11 +329,11 @@ unsafe fn mont_reduce(x23: __m128i, x01: __m128i) -> __m128i {
     //    [D1:D0] = [B0 ⊕ C1 : B1 ⊕ C0]
     // Output: [D1 ⊕ X3 : D0 ⊕ X2]
     static POLY: u128 = 1 << 127 | 1 << 126 | 1 << 121 | 1 << 63 | 1 << 62 | 1 << 57;
-    let poly = _mm_loadu_si128(ptr::addr_of!(POLY).cast());
-    let a = pmull(x01, poly);
-    let b = _mm_xor_si128(x01, _mm_shuffle_epi32(a, 0x4e));
-    let c = pmull2(b, poly);
-    _mm_xor_si128(x23, _mm_xor_si128(c, b))
+    let poly = unsafe { _mm_loadu_si128(ptr::addr_of!(POLY).cast()) };
+    let a = unsafe { pmull(x01, poly) };
+    let b = unsafe { _mm_xor_si128(x01, _mm_shuffle_epi32(a, 0x4e)) };
+    let c = unsafe { pmull2(b, poly) };
+    unsafe { _mm_xor_si128(x23, _mm_xor_si128(c, b)) }
 }
 
 /// Multiplies the low bits in `a` and `b`.
@@ -355,7 +346,7 @@ unsafe fn mont_reduce(x23: __m128i, x01: __m128i) -> __m128i {
 unsafe fn pmull(a: __m128i, b: __m128i) -> __m128i {
     debug_assert!(have_pclmulqdq());
 
-    _mm_clmulepi64_si128(a, b, 0x00)
+    unsafe { _mm_clmulepi64_si128(a, b, 0x00) }
 }
 
 /// Multiplies the high bits in `a` and `b`.
@@ -368,5 +359,5 @@ unsafe fn pmull(a: __m128i, b: __m128i) -> __m128i {
 unsafe fn pmull2(a: __m128i, b: __m128i) -> __m128i {
     debug_assert!(have_pclmulqdq());
 
-    _mm_clmulepi64_si128(a, b, 0x11)
+    unsafe { _mm_clmulepi64_si128(a, b, 0x11) }
 }

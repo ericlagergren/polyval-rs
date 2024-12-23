@@ -67,6 +67,7 @@ impl Mul for FieldElement {
     }
 }
 impl MulAssign for FieldElement {
+    #[allow(clippy::arithmetic_side_effects)]
     fn mul_assign(&mut self, rhs: Self) {
         *self = *self * rhs;
     }
@@ -142,6 +143,7 @@ pub(super) const fn polymul(x: FieldElement, y: FieldElement) -> FieldElement {
 
 /// Multiplies `acc` with the series of field elements in
 /// `blocks`.
+#[allow(clippy::arithmetic_side_effects)]
 fn polymul_series(
     mut acc: FieldElement,
     pow: &[FieldElement; 8],
@@ -215,6 +217,7 @@ fn polymul_series(
 ///
 /// [Thomas Pornin]: https://www.bearssl.org/constanttime.html
 /// [Tim Taubert]: https://timtaubert.de/blog/2017/06/verified-binary-multiplication-for-ghash/
+#[allow(clippy::arithmetic_side_effects)]
 pub(crate) const fn gf128_mul(x: u64, y: u64) -> FieldElement {
     const MASK0: u128 = 0x21084210842108421084210842108421;
     const MASK1: u128 = 0x42108421084210842108421084210842;

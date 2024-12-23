@@ -5,6 +5,7 @@
     target_arch = "aarch64",
     target_feature = "neon",
 ))]
+#![allow(clippy::undocumented_unsafe_blocks, reason = "Too many unsafe blocks.")]
 
 use core::{
     arch::aarch64::{
@@ -106,6 +107,7 @@ impl Mul for FieldElement {
     type Output = Self;
 
     #[inline]
+    #[allow(clippy::arithmetic_side_effects)]
     fn mul(self, rhs: Self) -> Self {
         if have_aes() {
             // SAFETY: `polymul_asm` requires the `neon` and
@@ -120,6 +122,7 @@ impl Mul for FieldElement {
 }
 impl MulAssign for FieldElement {
     #[inline]
+    #[allow(clippy::arithmetic_side_effects)]
     fn mul_assign(&mut self, rhs: Self) {
         *self = *self * rhs;
     }
@@ -152,12 +155,14 @@ impl PartialEq for FieldElement {
 }
 
 impl From<FieldElement> for generic::FieldElement {
+    #[inline]
     fn from(fe: FieldElement) -> Self {
         Self::from_le_bytes(&fe.to_le_bytes())
     }
 }
 
 impl From<generic::FieldElement> for FieldElement {
+    #[inline]
     fn from(fe: generic::FieldElement) -> Self {
         Self::from_le_bytes(&fe.to_le_bytes())
     }
@@ -171,9 +176,11 @@ impl From<generic::FieldElement> for FieldElement {
 unsafe fn polymul_asm(x: uint8x16_t, y: uint8x16_t) -> uint8x16_t {
     debug_assert!(have_aes());
 
-    let (h, m, l) = karatsuba1(x, y);
-    let (h, l) = karatsuba2(h, m, l);
-    mont_reduce(h, l) // d
+    let (h, m, l) = unsafe { karatsuba1(x, y) };
+    let (h, l) = unsafe { karatsuba2(h, m, l) };
+    unsafe {
+        mont_reduce(h, l) // d
+    }
 }
 
 /// Multiplies `acc` with the series of field elements in
@@ -192,27 +199,29 @@ unsafe fn polymul_series_asm(
     debug_assert!(have_aes());
     debug_assert!(blocks.len() % BLOCK_SIZE == 0);
 
+    // TODO
+    #[allow(clippy::arithmetic_side_effects)]
     let mut blocks = blocks.chunks_exact(BLOCK_SIZE * pow.len());
     if blocks.len() > 0 {
         let (lhs, rhs) = pow.split_at(pow.len() / 2);
-        let uint8x16x4_t(h0, h1, h2, h3) = vld1q_u8_x4(lhs.as_ptr().cast::<u8>());
-        let uint8x16x4_t(h4, h5, h6, h7) = vld1q_u8_x4(rhs.as_ptr().cast::<u8>());
+        let uint8x16x4_t(h0, h1, h2, h3) = unsafe { vld1q_u8_x4(lhs.as_ptr().cast::<u8>()) };
+        let uint8x16x4_t(h4, h5, h6, h7) = unsafe { vld1q_u8_x4(rhs.as_ptr().cast::<u8>()) };
 
         for chunk in blocks.by_ref() {
             let (lhs, rhs) = chunk.split_at(chunk.len() / 2);
-            let uint8x16x4_t(m0, m1, m2, m3) = vld1q_u8_x4(lhs.as_ptr());
-            let uint8x16x4_t(m4, m5, m6, m7) = vld1q_u8_x4(rhs.as_ptr());
+            let uint8x16x4_t(m0, m1, m2, m3) = unsafe { vld1q_u8_x4(lhs.as_ptr()) };
+            let uint8x16x4_t(m4, m5, m6, m7) = unsafe { vld1q_u8_x4(rhs.as_ptr()) };
 
-            let mut h = vdupq_n_u8(0);
-            let mut m = vdupq_n_u8(0);
-            let mut l = vdupq_n_u8(0);
+            let mut h = unsafe { vdupq_n_u8(0) };
+            let mut m = unsafe { vdupq_n_u8(0) };
+            let mut l = unsafe { vdupq_n_u8(0) };
 
             macro_rules! karatsuba_xor {
                 ($m:expr, $h:expr) => {
-                    let (hh, mm, ll) = karatsuba1($m, $h);
-                    h = veorq_u8(h, hh);
-                    m = veorq_u8(m, mm);
-                    l = veorq_u8(l, ll);
+                    let (hh, mm, ll) = unsafe { karatsuba1($m, $h) };
+                    h = unsafe { veorq_u8(h, hh) };
+                    m = unsafe { veorq_u8(m, mm) };
+                    l = unsafe { veorq_u8(l, ll) };
                 };
             }
             karatsuba_xor!(m7, h7);
@@ -222,20 +231,20 @@ unsafe fn polymul_series_asm(
             karatsuba_xor!(m3, h3);
             karatsuba_xor!(m2, h2);
             karatsuba_xor!(m1, h1);
-            let m0 = veorq_u8(m0, acc); // fold in accumulator
+            let m0 = unsafe { veorq_u8(m0, acc) }; // fold in accumulator
             karatsuba_xor!(m0, h0);
 
-            let (h, l) = karatsuba2(h, m, l);
-            acc = mont_reduce(h, l);
+            let (h, l) = unsafe { karatsuba2(h, m, l) };
+            acc = unsafe { mont_reduce(h, l) };
         }
     }
 
     // Handle singles.
     for block in blocks.remainder().chunks_exact(BLOCK_SIZE) {
-        let y = vld1q_u8(block.as_ptr());
+        let y = unsafe { vld1q_u8(block.as_ptr()) };
         // acc = (acc ^ y) * pow[7];
-        acc = veorq_u8(acc, y);
-        acc = polymul_asm(acc, pow[7]);
+        acc = unsafe { veorq_u8(acc, y) };
+        acc = unsafe { polymul_asm(acc, pow[7]) };
     }
 
     acc
@@ -257,12 +266,14 @@ unsafe fn karatsuba1(x: uint8x16_t, y: uint8x16_t) -> (uint8x16_t, uint8x16_t, u
     //        M                                 H         L
     //
     // m = x.hi^x.lo * y.hi^y.lo
-    let m = pmull(
-        veorq_u8(x, vextq_u8(x, x, 8)), // x.hi^x.lo
-        veorq_u8(y, vextq_u8(y, y, 8)), // y.hi^y.lo
-    );
-    let h = pmull2(x, y); // h = x.hi * y.hi
-    let l = pmull(x, y); // l = x.lo * y.lo
+    let m = unsafe {
+        pmull(
+            veorq_u8(x, vextq_u8(x, x, 8)), // x.hi^x.lo
+            veorq_u8(y, vextq_u8(y, y, 8)), // y.hi^y.lo
+        )
+    };
+    let h = unsafe { pmull2(x, y) }; // h = x.hi * y.hi
+    let l = unsafe { pmull(x, y) }; // l = x.lo * y.lo
     (h, m, l)
 }
 
@@ -283,7 +294,7 @@ unsafe fn karatsuba2(h: uint8x16_t, m: uint8x16_t, l: uint8x16_t) -> (uint8x16_t
     // l1 ^= m0      // = l1^(m0^l0^h0)
     // h0 ^= l0 ^ m1 // = h0^(l0^m1^l1^h1)
     // h1 ^= l1      // = h1^(l1^m0^l0^h0)
-    let t = {
+    let t = unsafe {
         //   {m0, m1} ^ {l1, h0}
         // = {m0^l1, m1^h0}
         let t0 = veorq_u8(m, vextq_u8(l, h, 8));
@@ -298,18 +309,22 @@ unsafe fn karatsuba2(h: uint8x16_t, m: uint8x16_t, l: uint8x16_t) -> (uint8x16_t
     };
 
     // {m0^l1^h0^l0, l0}
-    let x01 = vextq_u8(
-        vextq_u8(l, l, 8), // {l1, l0}
-        t,
-        8,
-    );
+    let x01 = unsafe {
+        vextq_u8(
+            vextq_u8(l, l, 8), // {l1, l0}
+            t,
+            8,
+        )
+    };
 
     // {h1, m1^h0^h1^l1}
-    let x23 = vextq_u8(
-        t,
-        vextq_u8(h, h, 8), // {h1, h0}
-        8,
-    );
+    let x23 = unsafe {
+        vextq_u8(
+            t,
+            vextq_u8(h, h, 8), // {h1, h0}
+            8,
+        )
+    };
 
     (x23, x01)
 }
@@ -328,11 +343,13 @@ unsafe fn mont_reduce(x23: uint8x16_t, x01: uint8x16_t) -> uint8x16_t {
     //    [C1:C0] = B0 • poly
     //    [D1:D0] = [B0 ⊕ C1 : B1 ⊕ C0]
     // Output: [D1 ⊕ X3 : D0 ⊕ X2]
-    let poly = vreinterpretq_u8_p128(1 << 127 | 1 << 126 | 1 << 121 | 1 << 63 | 1 << 62 | 1 << 57);
-    let a = pmull(x01, poly);
-    let b = veorq_u8(x01, vextq_u8(a, a, 8));
-    let c = pmull2(b, poly);
-    veorq_u8(x23, veorq_u8(c, b))
+    let poly = unsafe {
+        vreinterpretq_u8_p128(1 << 127 | 1 << 126 | 1 << 121 | 1 << 63 | 1 << 62 | 1 << 57)
+    };
+    let a = unsafe { pmull(x01, poly) };
+    let b = unsafe { veorq_u8(x01, vextq_u8(a, a, 8)) };
+    let c = unsafe { pmull2(b, poly) };
+    unsafe { veorq_u8(x23, veorq_u8(c, b)) }
 }
 
 /// Multiplies the low bits in `a` and `b`.
@@ -345,11 +362,13 @@ unsafe fn mont_reduce(x23: uint8x16_t, x01: uint8x16_t) -> uint8x16_t {
 unsafe fn pmull(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
     debug_assert!(have_aes());
 
-    let p = vmull_p64(
-        vgetq_lane_u64(vreinterpretq_u64_u8(a), 0),
-        vgetq_lane_u64(vreinterpretq_u64_u8(b), 0),
-    );
-    vreinterpretq_u8_p128(p)
+    let p = unsafe {
+        vmull_p64(
+            vgetq_lane_u64(vreinterpretq_u64_u8(a), 0),
+            vgetq_lane_u64(vreinterpretq_u64_u8(b), 0),
+        )
+    };
+    unsafe { vreinterpretq_u8_p128(p) }
 }
 
 /// Multiplies the high bits in `a` and `b`.
@@ -362,9 +381,11 @@ unsafe fn pmull(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
 unsafe fn pmull2(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
     debug_assert!(have_aes());
 
-    let p = vmull_p64(
-        vgetq_lane_u64(vreinterpretq_u64_u8(a), 1),
-        vgetq_lane_u64(vreinterpretq_u64_u8(b), 1),
-    );
-    vreinterpretq_u8_p128(p)
+    let p = unsafe {
+        vmull_p64(
+            vgetq_lane_u64(vreinterpretq_u64_u8(a), 1),
+            vgetq_lane_u64(vreinterpretq_u64_u8(b), 1),
+        )
+    };
+    unsafe { vreinterpretq_u8_p128(p) }
 }
