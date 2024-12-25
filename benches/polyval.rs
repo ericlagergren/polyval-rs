@@ -1,19 +1,22 @@
+//! Benchmarks.
+
 use core::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use polyhash::*;
 
-fn benchmark(c: &mut Criterion) {
+fn benchmark<B: Backend>(c: &mut Criterion, name: &str) {
     let key = Key::new_unchecked(&[1u8; 16]);
-    let mut m = Polyval::new(&key);
+    let mut m = Polyval::<B>::new(&key);
 
     let sizes = [16, 64, 128, 256, 512, 1024, 2048, 4096, 8192];
 
-    let mut g = c.benchmark_group("aligned");
+    let mut g = c.benchmark_group(name);
+
     for size in sizes {
         g.throughput(Throughput::Bytes(size as u64));
         g.bench_with_input(
-            BenchmarkId::new("update_padded", size),
+            BenchmarkId::new("aligned/update_padded", size),
             &size,
             |b, &size| {
                 let data = vec![0; size];
@@ -23,14 +26,12 @@ fn benchmark(c: &mut Criterion) {
             },
         );
     }
-    g.finish();
 
-    let mut g = c.benchmark_group("unaligned");
     for size in sizes {
         let size = size - 1;
         g.throughput(Throughput::Bytes(size as u64));
         g.bench_with_input(
-            BenchmarkId::new("update_padded", size),
+            BenchmarkId::new("unaligned/update_padded", size),
             &size,
             |b, &size| {
                 let data = vec![0; size];
@@ -40,8 +41,14 @@ fn benchmark(c: &mut Criterion) {
             },
         );
     }
+
     g.finish();
 }
 
-criterion_group!(benches, benchmark);
+fn benchmarks(c: &mut Criterion) {
+    benchmark::<Lite>(c, "lite");
+    benchmark::<Precomputed>(c, "precomputed");
+}
+
+criterion_group!(benches, benchmarks);
 criterion_main!(benches);
