@@ -3,9 +3,6 @@
 #![cfg(feature = "experimental")]
 #![cfg_attr(docsrs, doc(cfg(feature = "experimental")))]
 
-#[cfg(feature = "zeroize")]
-use zeroize::{Zeroize, ZeroizeOnDrop};
-
 pub use super::poly::State;
 use super::poly::{Polyval, Sealed, Tag};
 
