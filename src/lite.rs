@@ -79,7 +79,7 @@ impl Drop for Lite {
         #[cfg(feature = "zeroize")]
         {
             self.y.zeroize();
-            self.pow.zeroize();
+            self.h.zeroize();
         }
         #[cfg(not(feature = "zeroize"))]
         {
