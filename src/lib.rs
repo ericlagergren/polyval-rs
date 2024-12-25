@@ -13,5 +13,5 @@ mod poly;
 mod precomp;
 
 pub use lite::Lite;
-pub use poly::{Key, Polyval, Tag, BLOCK_SIZE, KEY_SIZE};
+pub use poly::{Backend, Key, Polyval, Tag, BLOCK_SIZE, KEY_SIZE};
 pub use precomp::Precomputed;
