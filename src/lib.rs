@@ -8,7 +8,10 @@
 
 mod backend;
 pub mod experimental;
+mod lite;
 mod poly;
-mod tests;
+mod precomp;
 
-pub use poly::*;
+pub use lite::Lite;
+pub use poly::{Key, Polyval, Tag, BLOCK_SIZE, KEY_SIZE};
+pub use precomp::Precomputed;

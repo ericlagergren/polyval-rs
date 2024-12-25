@@ -1,6 +1,6 @@
 [package]
 name = "polyhash"
-version = "0.1.3"
+version = "0.2.0"
 description = """
 POLYVAL per RFC 8452.
 """
@@ -73,6 +73,7 @@ name = "polyval"
 harness = false
 
 [package.metadata.docs.rs]
+all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 
 [package.metadata.cargo-all-features]
