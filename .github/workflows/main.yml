@@ -26,6 +26,5 @@ jobs:
         run: cargo clippy --tests
       - name: Unit tests
         run: |
-          ${{ matrix.deps }}
           cargo install --force cargo-all-features
           cargo test-all-features
