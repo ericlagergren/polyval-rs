@@ -60,6 +60,7 @@ impl Key {
 impl ZeroizeOnDrop for Key {}
 
 impl Drop for Key {
+    #[inline]
     fn drop(&mut self) {
         #[cfg(feature = "zeroize")]
         {
@@ -231,6 +232,7 @@ impl fmt::Debug for State {
 }
 
 // See https://doc.rust-lang.org/std/primitive.slice.html#method.as_chunks
+#[inline(always)]
 const fn as_blocks(blocks: &[u8]) -> (&[[u8; BLOCK_SIZE]], &[u8]) {
     #[allow(clippy::arithmetic_side_effects)]
     let len_rounded_down = (blocks.len() / BLOCK_SIZE) * BLOCK_SIZE;

@@ -25,6 +25,7 @@ impl Sealed for Lite {
         }
     }
 
+    #[inline]
     #[allow(clippy::arithmetic_side_effects)]
     fn update_block(&mut self, block: &[u8; BLOCK_SIZE]) {
         let fe = FieldElement::from_le_bytes(block);
@@ -75,6 +76,7 @@ impl Clone for Lite {
 impl ZeroizeOnDrop for Lite {}
 
 impl Drop for Lite {
+    #[inline]
     fn drop(&mut self) {
         #[cfg(feature = "zeroize")]
         {

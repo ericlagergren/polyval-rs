@@ -41,12 +41,14 @@ impl Sealed for Precomputed {
         }
     }
 
+    #[inline]
     #[allow(clippy::arithmetic_side_effects)]
     fn update_block(&mut self, block: &[u8; BLOCK_SIZE]) {
         let fe = FieldElement::from_le_bytes(block);
         self.y = (self.y ^ fe) * self.pow[7];
     }
 
+    #[inline]
     fn update_blocks(&mut self, blocks: &[[u8; BLOCK_SIZE]]) {
         // TODO(eric): Should the backends use `&[[u8; 16]]`
         // instead of `&[u8]`?
