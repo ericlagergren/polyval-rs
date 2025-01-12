@@ -92,6 +92,7 @@ impl Clone for Precomputed {
 impl ZeroizeOnDrop for Precomputed {}
 
 impl Drop for Precomputed {
+    #[inline]
     fn drop(&mut self) {
         #[cfg(feature = "zeroize")]
         {
