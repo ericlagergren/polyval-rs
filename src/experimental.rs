@@ -3,8 +3,8 @@
 #![cfg(feature = "experimental")]
 #![cfg_attr(docsrs, doc(cfg(feature = "experimental")))]
 
-pub use super::poly::State;
-use super::poly::{Polyval, Sealed, Tag};
+pub use crate::poly::State;
+use crate::poly::{Polyval, Sealed, Tag};
 
 impl Polyval {
     /// Exports the current state.
@@ -25,4 +25,15 @@ impl Polyval {
     pub fn current_tag(&self) -> Tag {
         self.0.tag()
     }
+}
+
+// /// TODO
+// #[derive(Debug)]
+// pub struct Ghash<B = Precomputed>(B);
+
+/// TODO
+#[derive(Clone)]
+pub struct Precomputed {
+    poly: crate::lite::Lite,
+    pow: [crate::backend::FieldElement; 8],
 }

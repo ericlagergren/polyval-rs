@@ -19,12 +19,24 @@ use crate::poly::BLOCK_SIZE;
 pub(crate) struct FieldElement(u128);
 
 impl FieldElement {
+    /// Creates a field element from little-endian bytes.
     pub const fn from_le_bytes(b: &[u8; BLOCK_SIZE]) -> Self {
         Self(u128::from_le_bytes(*b))
     }
 
+    /// Converts the field element to little-endian bytes.
     pub const fn to_le_bytes(self) -> [u8; BLOCK_SIZE] {
         self.0.to_le_bytes()
+    }
+
+    /// Creates a field element from big-endian bytes.
+    pub const fn from_be_bytes(b: &[u8; BLOCK_SIZE]) -> Self {
+        Self(u128::from_be_bytes(*b))
+    }
+
+    /// Converts the field element to little-endian bytes.
+    pub const fn to_be_bytes(self) -> [u8; BLOCK_SIZE] {
+        self.0.to_be_bytes()
     }
 
     const fn pack(lo: u64, hi: u64) -> Self {
@@ -37,23 +49,37 @@ impl FieldElement {
         (lo, hi)
     }
 
+    /// Returns `self*rhs`.
+    #[must_use = "this returns the result of the operation \
+                      without modifying the original"]
+    pub fn polymul(self, rhs: Self) -> Self {
+        polymul(self, rhs)
+    }
+
     /// Multiplies `acc` with the series of field elements in
     /// `blocks`.
     #[must_use = "this returns the result of the operation \
                       without modifying the original"]
-    pub fn mul_series(self, pow: &[Self; 8], blocks: &[u8]) -> Self {
-        polymul_series(self, pow, blocks)
+    pub fn polymul_series<const LE: bool>(
+        self,
+        pow: &[Self; 8],
+        blocks: &[[u8; BLOCK_SIZE]],
+    ) -> Self {
+        polymul_series::<LE>(self, pow, blocks)
     }
 }
 
 impl BitXor for FieldElement {
     type Output = Self;
 
+    #[inline(always)]
     fn bitxor(self, rhs: Self) -> Self::Output {
         Self(self.0 ^ rhs.0)
     }
 }
+
 impl BitXorAssign for FieldElement {
+    #[inline(always)]
     fn bitxor_assign(&mut self, rhs: Self) {
         self.0 ^= rhs.0;
     }
@@ -63,9 +89,10 @@ impl Mul for FieldElement {
     type Output = Self;
 
     fn mul(self, rhs: Self) -> Self::Output {
-        polymul(self, rhs)
+        self.polymul(rhs)
     }
 }
+
 impl MulAssign for FieldElement {
     #[allow(clippy::arithmetic_side_effects)]
     fn mul_assign(&mut self, rhs: Self) {
@@ -76,6 +103,7 @@ impl MulAssign for FieldElement {
 impl Shl<u32> for FieldElement {
     type Output = Self;
 
+    #[inline(always)]
     fn shl(self, rhs: u32) -> Self::Output {
         Self(self.0 << rhs)
     }
@@ -84,6 +112,7 @@ impl Shl<u32> for FieldElement {
 impl Shr<u32> for FieldElement {
     type Output = Self;
 
+    #[inline(always)]
     fn shr(self, rhs: u32) -> Self::Output {
         Self(self.0 >> rhs)
     }
@@ -144,25 +173,24 @@ pub(super) const fn polymul(x: FieldElement, y: FieldElement) -> FieldElement {
 /// Multiplies `acc` with the series of field elements in
 /// `blocks`.
 #[allow(clippy::arithmetic_side_effects)]
-fn polymul_series(
+fn polymul_series<const LE: bool>(
     mut acc: FieldElement,
     pow: &[FieldElement; 8],
-    mut blocks: &[u8],
+    blocks: &[[u8; BLOCK_SIZE]],
 ) -> FieldElement {
-    debug_assert!(blocks.len() % BLOCK_SIZE == 0);
-
-    // Handle wide chunks.
-    while let Some((chunk, rest)) = blocks.split_first_chunk::<{ BLOCK_SIZE * 8 }>() {
+    let mut blocks = blocks.chunks_exact(8);
+    for chunk in blocks.by_ref() {
         let mut h = FieldElement(0);
         let mut m = FieldElement(0);
         let mut l = FieldElement(0);
 
         macro_rules! karatsuba_xor {
             ($i:literal) => {
-                let block = &chunk[$i * BLOCK_SIZE..($i * BLOCK_SIZE) + BLOCK_SIZE]
-                    .try_into()
-                    .expect("should be exactly BLOCK_SIZE bytes");
-                let mut y = FieldElement::from_le_bytes(*block);
+                let mut y = if LE {
+                    FieldElement::from_le_bytes(&chunk[$i])
+                } else {
+                    FieldElement::from_be_bytes(&chunk[$i])
+                };
                 if $i == 0 {
                     y ^= acc
                 };
@@ -195,14 +223,16 @@ fn polymul_series(
         h1 ^= l1 ^ (l1 >> 1) ^ (l1 >> 2) ^ (l1 >> 7);
 
         acc = FieldElement::pack(h0, h1);
-        blocks = rest;
     }
 
     // Handle singles.
-    while let Some((block, rest)) = blocks.split_first_chunk() {
-        let y = FieldElement::from_le_bytes(block);
+    for block in blocks.remainder() {
+        let y = if LE {
+            FieldElement::from_le_bytes(block)
+        } else {
+            FieldElement::from_be_bytes(block)
+        };
         acc = (acc ^ y) * pow[7];
-        blocks = rest;
     }
 
     acc

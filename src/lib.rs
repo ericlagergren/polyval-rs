@@ -6,7 +6,7 @@
 #![cfg_attr(not(any(test, doctest, feature = "std")), no_std)]
 #![cfg_attr(not(any(feature = "std", test)), deny(clippy::std_instead_of_core))]
 
-mod backend;
+pub mod backend;
 pub mod experimental;
 mod lite;
 mod poly;

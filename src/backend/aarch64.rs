@@ -10,7 +10,7 @@
 use core::{
     arch::aarch64::{
         uint8x16_t, uint8x16x4_t, vdupq_n_u8, veorq_u8, vextq_u8, vgetq_lane_u64, vld1q_u8,
-        vld1q_u8_x4, vmull_p64, vreinterpretq_u64_u8, vreinterpretq_u8_p128, vst1q_u8,
+        vld1q_u8_x4, vmull_p64, vreinterpretq_u64_u8, vreinterpretq_u8_p128, vrev64q_u8, vst1q_u8,
     },
     ops::{BitXor, BitXorAssign, Mul, MulAssign},
 };
@@ -24,13 +24,13 @@ use crate::poly::BLOCK_SIZE;
 // NB: `aes` implies `neon`.
 cpufeatures::new!(have_aes, "aes");
 
-fn have_aes() -> bool {
+pub(super) fn supported() -> bool {
     have_aes::get()
 }
 
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
-pub(crate) struct FieldElement(uint8x16_t);
+pub struct FieldElement(uint8x16_t);
 
 impl FieldElement {
     #[inline]
@@ -38,6 +38,14 @@ impl FieldElement {
         // SAFETY: This intrinsic requires the `neon` target
         // feature, which we have.
         let fe = unsafe { vld1q_u8(data.as_ptr()) };
+        Self(fe)
+    }
+
+    #[inline]
+    pub fn from_be_bytes(data: &[u8; BLOCK_SIZE]) -> Self {
+        // SAFETY: This intrinsic requires the `neon` target
+        // feature, which we have.
+        let fe = unsafe { vrev64q_u8(vld1q_u8(data.as_ptr())) };
         Self(fe)
     }
 
@@ -50,26 +58,62 @@ impl FieldElement {
         out
     }
 
-    /// Multiplies `acc` with the series of field elements in
-    /// `blocks`.
+    #[inline]
+    pub fn to_be_bytes(self) -> [u8; BLOCK_SIZE] {
+        let mut out = [0u8; BLOCK_SIZE];
+        // SAFETY: This intrinsic requires the `neon` target
+        // feature, which we have.
+        unsafe { vst1q_u8(out.as_mut_ptr(), self.0) }
+        out
+    }
+
+    /// Converts the field element to a generic field element.
+    #[inline]
+    pub fn into_generic(self) -> generic::FieldElement {
+        generic::FieldElement::from_le_bytes(&self.to_le_bytes())
+    }
+
+    /// Creates a field element from a generic field element.
+    #[inline]
+    pub fn from_generic(fe: generic::FieldElement) -> Self {
+        Self::from_le_bytes(&fe.to_le_bytes())
+    }
+
+    /// # Safety
+    ///
+    /// The NEON and AES architectural features must be enabled.
+    #[inline]
     #[must_use = "this returns the result of the operation \
                       without modifying the original"]
-    pub fn mul_series(self, pow: &[Self; 8], blocks: &[u8]) -> Self {
-        if have_aes() {
-            // SAFETY: `uint8x16_t` and `FieldElement` have the
-            // same layout in memory. The pointer came from
-            // a reference, so it safe to dereference.
-            let pow = unsafe { &*(pow as *const [FieldElement; 8]).cast() };
-            // SAFETY: `polymul_series_asm` requires the `neon`
-            // and `aes` target features, which we have.
-            let fe = unsafe { polymul_series_asm(self.0, pow, blocks) };
-            FieldElement(fe)
-        } else {
-            let pow = pow.map(Into::into);
-            generic::FieldElement::from(self)
-                .mul_series(&pow, blocks)
-                .into()
-        }
+    #[target_feature(enable = "neon,aes")]
+    pub unsafe fn polymul(self, rhs: Self) -> Self {
+        debug_assert!(supported());
+
+        // SAFETY: `polymul_asm` requires the `neon` and
+        // `aes` target features, which we have.
+        let fe = unsafe { polymul_asm(self.0, rhs.0) };
+        Self(fe)
+    }
+
+    /// Multiplies `acc` with the series of field elements in
+    /// `blocks`.
+    #[inline]
+    #[must_use = "this returns the result of the operation \
+                      without modifying the original"]
+    #[target_feature(enable = "neon,aes")]
+    pub unsafe fn polymul_series<const LE: bool>(
+        self,
+        pow: &[Self; 8],
+        blocks: &[[u8; BLOCK_SIZE]],
+    ) -> Self {
+        // SAFETY: `uint8x16_t` and `FieldElement` have the
+        // same layout in memory. The pointer came from
+        // a reference, so it is safe to dereference.
+        let pow = unsafe { &*(pow as *const [FieldElement; 8]).cast() };
+        // SAFETY: `polymul_series_asm` requires the `neon`
+        // and `aes` target features, which we have.
+        let fe = unsafe { polymul_series_asm::<LE>(self.0, pow, blocks) };
+        FieldElement(fe)
     }
 }
 
@@ -109,7 +153,7 @@ impl Mul for FieldElement {
     #[inline]
     #[allow(clippy::arithmetic_side_effects)]
     fn mul(self, rhs: Self) -> Self {
-        if have_aes() {
+        if supported() {
             // SAFETY: `polymul_asm` requires the `neon` and
             // `aes` target features, which we have.
             let fe = unsafe { polymul_asm(self.0, rhs.0) };
@@ -141,16 +185,7 @@ impl Eq for FieldElement {}
 #[cfg(test)]
 impl PartialEq for FieldElement {
     fn eq(&self, other: &Self) -> bool {
-        use core::arch::aarch64::vceqq_u8;
-
-        // SAFETY: This intrinsic requires the `neon` target
-        // feature, which we have.
-        let v = unsafe { vceqq_u8(self.0, other.0) };
-
-        // SAFETY: `uint8x16_t` has the same size as `u128`.
-        let v = unsafe { core::mem::transmute::<uint8x16_t, u128>(v) };
-
-        v == u128::MAX
+        u128::from_le_bytes(self.to_le_bytes()) == u128::MAX
     }
 }
 
@@ -174,7 +209,7 @@ impl From<generic::FieldElement> for FieldElement {
 #[inline]
 #[target_feature(enable = "neon,aes")]
 unsafe fn polymul_asm(x: uint8x16_t, y: uint8x16_t) -> uint8x16_t {
-    debug_assert!(have_aes());
+    debug_assert!(supported());
 
     let (h, m, l) = unsafe { karatsuba1(x, y) };
     let (h, l) = unsafe { karatsuba2(h, m, l) };
@@ -191,17 +226,14 @@ unsafe fn polymul_asm(x: uint8x16_t, y: uint8x16_t) -> uint8x16_t {
 /// The NEON and AES architectural features must be enabled.
 #[inline]
 #[target_feature(enable = "neon,aes")]
-unsafe fn polymul_series_asm(
+unsafe fn polymul_series_asm<const LE: bool>(
     mut acc: uint8x16_t,
     pow: &[uint8x16_t; 8],
-    blocks: &[u8],
+    blocks: &[[u8; BLOCK_SIZE]],
 ) -> uint8x16_t {
-    debug_assert!(have_aes());
-    debug_assert!(blocks.len() % BLOCK_SIZE == 0);
+    debug_assert!(supported());
 
-    // TODO
-    #[allow(clippy::arithmetic_side_effects)]
-    let mut blocks = blocks.chunks_exact(BLOCK_SIZE * pow.len());
+    let mut blocks = blocks.chunks_exact(8);
     if blocks.len() > 0 {
         let (lhs, rhs) = pow.split_at(pow.len() / 2);
         let uint8x16x4_t(h0, h1, h2, h3) = unsafe { vld1q_u8_x4(lhs.as_ptr().cast::<u8>()) };
@@ -209,8 +241,21 @@ unsafe fn polymul_series_asm(
 
         for chunk in blocks.by_ref() {
             let (lhs, rhs) = chunk.split_at(chunk.len() / 2);
-            let uint8x16x4_t(m0, m1, m2, m3) = unsafe { vld1q_u8_x4(lhs.as_ptr()) };
-            let uint8x16x4_t(m4, m5, m6, m7) = unsafe { vld1q_u8_x4(rhs.as_ptr()) };
+            let uint8x16x4_t(mut m0, mut m1, mut m2, mut m3) =
+                unsafe { vld1q_u8_x4(lhs.as_ptr().cast()) };
+            let uint8x16x4_t(mut m4, mut m5, mut m6, mut m7) =
+                unsafe { vld1q_u8_x4(rhs.as_ptr().cast()) };
+
+            if !LE {
+                m0 = unsafe { vrev64q_u8(m0) };
+                m1 = unsafe { vrev64q_u8(m1) };
+                m2 = unsafe { vrev64q_u8(m2) };
+                m3 = unsafe { vrev64q_u8(m3) };
+                m4 = unsafe { vrev64q_u8(m4) };
+                m5 = unsafe { vrev64q_u8(m5) };
+                m6 = unsafe { vrev64q_u8(m6) };
+                m7 = unsafe { vrev64q_u8(m7) };
+            }
 
             let mut h = unsafe { vdupq_n_u8(0) };
             let mut m = unsafe { vdupq_n_u8(0) };
@@ -240,8 +285,11 @@ unsafe fn polymul_series_asm(
     }
 
     // Handle singles.
-    for block in blocks.remainder().chunks_exact(BLOCK_SIZE) {
-        let y = unsafe { vld1q_u8(block.as_ptr()) };
+    for block in blocks.remainder() {
+        let mut y = unsafe { vld1q_u8(block.as_ptr().cast()) };
+        if !LE {
+            y = unsafe { vrev64q_u8(y) };
+        }
         // acc = (acc ^ y) * pow[7];
         acc = unsafe { veorq_u8(acc, y) };
         acc = unsafe { polymul_asm(acc, pow[7]) };
@@ -258,7 +306,7 @@ unsafe fn polymul_series_asm(
 #[inline]
 #[target_feature(enable = "neon,aes")]
 unsafe fn karatsuba1(x: uint8x16_t, y: uint8x16_t) -> (uint8x16_t, uint8x16_t, uint8x16_t) {
-    debug_assert!(have_aes());
+    debug_assert!(supported());
 
     // First Karatsuba step: decompose x and y.
     //
@@ -283,9 +331,9 @@ unsafe fn karatsuba1(x: uint8x16_t, y: uint8x16_t) -> (uint8x16_t, uint8x16_t, u
 ///
 /// The NEON architectural feature must be enabled.
 #[inline]
-#[target_feature(enable = "neon,aes")]
+#[target_feature(enable = "neon")]
 unsafe fn karatsuba2(h: uint8x16_t, m: uint8x16_t, l: uint8x16_t) -> (uint8x16_t, uint8x16_t) {
-    debug_assert!(have_aes());
+    debug_assert!(supported());
 
     // Second Karatsuba step: combine into a 2n-bit product.
     //
@@ -335,7 +383,7 @@ unsafe fn karatsuba2(h: uint8x16_t, m: uint8x16_t, l: uint8x16_t) -> (uint8x16_t
 #[inline]
 #[target_feature(enable = "neon,aes")]
 unsafe fn mont_reduce(x23: uint8x16_t, x01: uint8x16_t) -> uint8x16_t {
-    debug_assert!(have_aes());
+    debug_assert!(supported());
 
     // Perform the Montgomery reduction over the 256-bit X.
     //    [A1:A0] = X0 • poly
@@ -360,7 +408,7 @@ unsafe fn mont_reduce(x23: uint8x16_t, x01: uint8x16_t) -> uint8x16_t {
 #[inline]
 #[target_feature(enable = "neon,aes")]
 unsafe fn pmull(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
-    debug_assert!(have_aes());
+    debug_assert!(supported());
 
     let p = unsafe {
         vmull_p64(
@@ -379,7 +427,7 @@ unsafe fn pmull(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
 #[inline]
 #[target_feature(enable = "neon,aes")]
 unsafe fn pmull2(a: uint8x16_t, b: uint8x16_t) -> uint8x16_t {
-    debug_assert!(have_aes());
+    debug_assert!(supported());
 
     let p = unsafe {
         vmull_p64(
