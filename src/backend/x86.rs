@@ -44,6 +44,7 @@ fn have_pclmulqdq() -> bool {
 pub(crate) struct FieldElement(__m128i);
 
 impl FieldElement {
+    #[inline]
     pub fn from_le_bytes(data: &[u8; BLOCK_SIZE]) -> Self {
         // SAFETY: This intrinsic requires the `sse2` target
         // feature, which we have.
@@ -51,6 +52,7 @@ impl FieldElement {
         Self(fe)
     }
 
+    #[inline]
     pub fn to_le_bytes(self) -> [u8; BLOCK_SIZE] {
         let mut out = [0u8; BLOCK_SIZE];
         // SAFETY: This intrinsic requires the `sse2` target
@@ -83,6 +85,7 @@ impl FieldElement {
 }
 
 impl Default for FieldElement {
+    #[inline]
     fn default() -> Self {
         // SAFETY: This intrinsic requires the `sse2` target
         // feature, which we have.
@@ -94,6 +97,7 @@ impl Default for FieldElement {
 impl BitXor for FieldElement {
     type Output = Self;
 
+    #[inline]
     fn bitxor(self, rhs: Self) -> Self {
         // SAFETY: This intrinsic requires the `sse2` target
         // feature, which we have.
@@ -102,6 +106,7 @@ impl BitXor for FieldElement {
     }
 }
 impl BitXorAssign for FieldElement {
+    #[inline]
     fn bitxor_assign(&mut self, rhs: Self) {
         // SAFETY: This intrinsic requires the `sse2` target
         // feature, which we have.
@@ -136,6 +141,7 @@ impl MulAssign for FieldElement {
 
 #[cfg(feature = "zeroize")]
 impl Zeroize for FieldElement {
+    #[inline]
     fn zeroize(&mut self) {
         self.0.zeroize();
     }

@@ -91,6 +91,7 @@ impl Shr<u32> for FieldElement {
 
 #[cfg(feature = "zeroize")]
 impl Zeroize for FieldElement {
+    #[inline]
     fn zeroize(&mut self) {
         self.0.zeroize();
     }
