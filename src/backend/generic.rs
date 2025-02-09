@@ -11,7 +11,7 @@ use core::ops::{BitXor, BitXorAssign, Mul, MulAssign, Shl, Shr};
 #[cfg(feature = "zeroize")]
 use zeroize::Zeroize;
 
-use crate::poly::BLOCK_SIZE;
+use crate::BLOCK_SIZE;
 
 #[derive(Copy, Clone, Debug, Default)]
 #[cfg_attr(test, derive(Eq, PartialEq))]

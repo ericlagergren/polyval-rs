@@ -44,6 +44,9 @@ default = []
 # Experimental features NOT covered by semver.
 experimental = []
 
+# Implement GHASH.
+ghash = []
+
 # Enable the software-only backend.
 soft = []
 
@@ -63,6 +66,7 @@ zeroize = { version = "1.8", default-features = false, optional = true }
 polyhash = { path = ".", features = ["experimental"] }
 
 hex = { version = "0.4", features = ["serde"] }
+hex-literal = { version = "0.4" }
 criterion = { version = "0.5" }
 rand = { version = "0.8", features = ["std_rng"] }
 serde_json = { version = "1" }

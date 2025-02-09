@@ -17,7 +17,7 @@ use cfg_if::cfg_if;
 use zeroize::Zeroize;
 
 use super::generic;
-use crate::poly::BLOCK_SIZE;
+use crate::BLOCK_SIZE;
 
 cfg_if! {
     if #[cfg(target_arch = "x86")] {

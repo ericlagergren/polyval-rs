@@ -12,14 +12,14 @@ use core::{
         uint8x16_t, uint8x16x4_t, vdupq_n_u8, veorq_u8, vextq_u8, vgetq_lane_u64, vld1q_u8,
         vld1q_u8_x4, vmull_p64, vreinterpretq_u64_u8, vreinterpretq_u8_p128, vrev64q_u8, vst1q_u8,
     },
-    ops::{BitXor, BitXorAssign, Mul, MulAssign},
+    ops::{BitXor, BitXorAssign},
 };
 
 #[cfg(feature = "zeroize")]
 use zeroize::Zeroize;
 
 use super::generic;
-use crate::poly::BLOCK_SIZE;
+use crate::BLOCK_SIZE;
 
 // NB: `aes` implies `neon`.
 cpufeatures::new!(have_aes, "aes");
@@ -147,31 +147,6 @@ impl BitXorAssign for FieldElement {
     }
 }
 
-impl Mul for FieldElement {
-    type Output = Self;
-
-    #[inline]
-    #[allow(clippy::arithmetic_side_effects)]
-    fn mul(self, rhs: Self) -> Self {
-        if supported() {
-            // SAFETY: `polymul_asm` requires the `neon` and
-            // `aes` target features, which we have.
-            let fe = unsafe { polymul_asm(self.0, rhs.0) };
-            Self(fe)
-        } else {
-            let fe = generic::FieldElement::from(self) * generic::FieldElement::from(rhs);
-            fe.into()
-        }
-    }
-}
-impl MulAssign for FieldElement {
-    #[inline]
-    #[allow(clippy::arithmetic_side_effects)]
-    fn mul_assign(&mut self, rhs: Self) {
-        *self = *self * rhs;
-    }
-}
-
 #[cfg(feature = "zeroize")]
 impl Zeroize for FieldElement {
     fn zeroize(&mut self) {
@@ -185,21 +160,7 @@ impl Eq for FieldElement {}
 #[cfg(test)]
 impl PartialEq for FieldElement {
     fn eq(&self, other: &Self) -> bool {
-        u128::from_le_bytes(self.to_le_bytes()) == u128::MAX
-    }
-}
-
-impl From<FieldElement> for generic::FieldElement {
-    #[inline]
-    fn from(fe: FieldElement) -> Self {
-        Self::from_le_bytes(&fe.to_le_bytes())
-    }
-}
-
-impl From<generic::FieldElement> for FieldElement {
-    #[inline]
-    fn from(fe: generic::FieldElement) -> Self {
-        Self::from_le_bytes(&fe.to_le_bytes())
+        self.to_le_bytes() == other.to_le_bytes()
     }
 }
 

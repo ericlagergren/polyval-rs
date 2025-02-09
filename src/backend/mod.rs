@@ -26,7 +26,10 @@ cfg_if::cfg_if! {
 ))]
 pub(crate) use imp::gf128_mul;
 
-use crate::poly::BLOCK_SIZE;
+use crate::BLOCK_SIZE;
+
+pub const LE: bool = true;
+pub const BE: bool = false;
 
 /// An element in the field
 ///
@@ -76,6 +79,16 @@ impl<const LE: bool> FieldElement<LE> {
             let fe = self.0.into_generic().polymul_series::<LE>(&pow, blocks);
             Self(imp::FieldElement::from_generic(fe))
         }
+    }
+}
+
+#[cfg(test)]
+impl Eq for FieldElement {}
+
+#[cfg(test)]
+impl PartialEq for FieldElement {
+    fn eq(&self, other: &Self) -> bool {
+        PartialEq::eq(&self.0, &other.0)
     }
 }
 
