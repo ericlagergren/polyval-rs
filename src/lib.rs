@@ -14,15 +14,13 @@ use core::slice;
 
 pub use subtle::Choice;
 use subtle::ConstantTimeEq;
-#[cfg(feature = "zeroize")]
-use zeroize::{Zeroize, ZeroizeOnDrop};
 
 pub use crate::poly::{Polyval, PolyvalLite};
 
-/// The size in bytes of a POLYVAL key.
+/// The size in bytes of a POLYVAL (or GHASH) key.
 pub const KEY_SIZE: usize = 16;
 
-/// The size in bytes of a POLYVAL block.
+/// The size in bytes of a POLYVAL (or GHASH) block.
 pub const BLOCK_SIZE: usize = 16;
 
 /// An authentication tag.
@@ -44,6 +42,7 @@ impl From<Tag> for [u8; 16] {
 }
 
 // See https://doc.rust-lang.org/std/primitive.slice.html#method.as_chunks
+#[inline(always)]
 const fn as_blocks(blocks: &[u8]) -> (&[[u8; BLOCK_SIZE]], &[u8]) {
     #[allow(clippy::arithmetic_side_effects)]
     let len_rounded_down = (blocks.len() / BLOCK_SIZE) * BLOCK_SIZE;
@@ -60,10 +59,10 @@ const fn as_blocks(blocks: &[u8]) -> (&[[u8; BLOCK_SIZE]], &[u8]) {
 
 macro_rules! impl_state {
     ($name:ident, $endian:ident) => {
-        /// Saved hash staet.
+        /// Saved hash state.
         #[derive(Clone, Default)]
         pub struct $name {
-            pub(crate) y: $crate::backend::FieldElement<$endian>,
+            pub(crate) y: $crate::backend::FieldElement,
         }
 
         #[cfg(feature = "zeroize")]
@@ -80,7 +79,7 @@ macro_rules! impl_state {
                 }
                 #[cfg(not(feature = "zeroize"))]
                 {
-                    self.y ^= self.y;
+                    self.y = Default::default();
                 }
             }
         }
@@ -126,10 +125,9 @@ macro_rules! impl_hash {
             /// Only use this method if `key` is known to be
             /// non-zero. Using an all zero key fixes the output
             /// to zero, regardless of the input.
-            #[inline]
+            //#[inline]
             pub fn new_unchecked(key: &[u8; $crate::KEY_SIZE]) -> Self {
-                let h = $crate::backend::FieldElement::from_bytes(key);
-                Self(<$inner>::new(h))
+                Self(<$inner>::new(key))
             }
 
             /// Writes a single block to the running hash.
@@ -140,19 +138,20 @@ macro_rules! impl_hash {
 
             /// Writes one or more blocks to the running hash.
             #[inline]
-            pub fn update(&mut self, blocks: &[[u8; $crate::BLOCK_SIZE]]) {
+            pub fn update_blocks(&mut self, blocks: &[[u8; $crate::BLOCK_SIZE]]) {
                 self.0.update_blocks(blocks);
             }
 
             /// Writes one or more blocks to the running hash.
             ///
             /// If the length of `blocks` is non-zero, it's
-            /// padded to the lowest multiple of [`BLOCK_SIZE`].
+            /// padded to the lowest multiple of
+            /// [`BLOCK_SIZE`][crate::BLOCK_SIZE].
             #[inline]
             pub fn update_padded(&mut self, blocks: &[u8]) {
                 let (head, tail) = $crate::as_blocks(blocks);
                 if !head.is_empty() {
-                    self.update(head);
+                    self.update_blocks(head);
                 }
                 if !tail.is_empty() {
                     let mut block = [0u8; $crate::BLOCK_SIZE];
@@ -166,7 +165,7 @@ macro_rules! impl_hash {
             }
 
             /// Returns the current authentication tag.
-            #[inline]
+            //#[inline]
             pub fn tag(self) -> $crate::Tag {
                 $crate::Tag(self.0.tag())
             }
@@ -175,9 +174,7 @@ macro_rules! impl_hash {
             /// `expected_tag`.
             #[inline]
             pub fn verify(self, expected_tag: &$crate::Tag) -> ::subtle::Choice {
-                use ::subtle::ConstantTimeEq;
-
-                self.tag().ct_eq(expected_tag)
+                ::subtle::ConstantTimeEq::ct_eq(&self.tag(), expected_tag)
             }
 
             /// Exports the current state.

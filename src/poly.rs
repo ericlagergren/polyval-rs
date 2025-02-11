@@ -1,9 +1,11 @@
 use crate::{
-    backend::{self, LE},
+    backend::{Big, Small, POLYVAL},
     impl_hash, impl_state,
 };
 
 impl_state!(PolyvalState, LE);
+
+#[cfg(feature = "experimental")]
 type State = PolyvalState;
 
 impl_hash! {
@@ -23,7 +25,7 @@ impl_hash! {
     /// For more information on POLYVAL, see [RFC 8452].
     ///
     /// [RFC 8452]: https://datatracker.ietf.org/doc/html/rfc8452
-    pub struct Polyval(backend::Precomputed<LE>);
+    pub struct Polyval(Big<POLYVAL>);
 }
 
 impl_hash! {
@@ -32,16 +34,15 @@ impl_hash! {
     ///
     /// This saves space, but can be slower if the input is more
     /// than a couple blocks long.
-    pub struct PolyvalLite(backend::Lite<LE>);
+    pub struct PolyvalLite(Small<POLYVAL>);
 }
 
 #[cfg(test)]
 mod tests {
-    use hex_literal::hex;
     use serde::Deserialize;
 
     use super::*;
-    use crate::{as_blocks, backend::FieldElement, KEY_SIZE};
+    use crate::{as_blocks, KEY_SIZE};
 
     macro_rules! hex {
         ($($s:literal)*) => {{
@@ -49,43 +50,6 @@ mod tests {
             const OUTPUT: [u8; LEN] = hex_literal::hex!($($s)*);
             &OUTPUT
         }};
-    }
-
-    macro_rules! fe {
-        ($s:expr) => {{
-            FieldElement::from_bytes(hex!($s).as_slice().try_into().unwrap())
-        }};
-    }
-
-    #[test]
-    fn test_fe_ops() {
-        let a = fe!("66e94bd4ef8a2c3b884cfa59ca342b2e");
-        let b = fe!("ff000000000000000000000000000000");
-
-        let want = fe!("99e94bd4ef8a2c3b884cfa59ca342b2e");
-        assert_eq!(a ^ b, want);
-        assert_eq!(b ^ a, want);
-
-        let want = fe!("ebe563401e7e91ea3ad6426b8140c394");
-        assert_eq!(a * b, want);
-        assert_eq!(b * a, want);
-    }
-
-    #[test]
-    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")))]
-    fn test_gf128_mul_commutative() {
-        use rand::{rngs::StdRng, RngCore, SeedableRng};
-
-        use super::backend::gf128_mul;
-
-        let mut rng = StdRng::from_entropy();
-        for _ in 0..100_000 {
-            let x = rng.next_u64();
-            let y = rng.next_u64();
-            let xy = unsafe { gf128_mul(x, y) };
-            let yx = unsafe { gf128_mul(y, x) };
-            assert_eq!(xy, yx, "{x}*{y}");
-        }
     }
 
     #[test]
@@ -266,7 +230,7 @@ mod tests {
             let (blocks, []) = as_blocks(&tc.input.message_hex) else {
                 panic!("#{i}: {} should block sized", tc.description);
             };
-            p.update(blocks);
+            p.update_blocks(blocks);
             let got: [u8; 16] = p.clone().tag().into();
             let want = &tc.hash_hex[..];
             assert_eq!(got, want, "#{i}: (precomp) {}", tc.description);
@@ -275,7 +239,7 @@ mod tests {
             let (blocks, []) = as_blocks(&tc.input.message_hex) else {
                 panic!("#{i}: {} should block sized", tc.description);
             };
-            p.update(blocks);
+            p.update_blocks(blocks);
             let got: [u8; 16] = p.clone().tag().into();
             let want = &tc.hash_hex[..];
             assert_eq!(got, want, "#{i}: (lite) {}", tc.description);

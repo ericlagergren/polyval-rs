@@ -1,9 +1,8 @@
 mod aarch64;
-mod generic;
 mod soft;
 mod x86;
 
-use core::ops::{BitXor, BitXorAssign, Mul, MulAssign};
+use core::{mem::ManuallyDrop, slice};
 
 #[cfg(feature = "zeroize")]
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -11,25 +10,45 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 cfg_if::cfg_if! {
     if #[cfg(feature = "soft")] {
         use soft as imp;
-    } else if #[cfg(target_arch = "aarch64")] {
+    } else if #[cfg(all(target_arch = "aarch64", target_feature = "neon"))] {
         use aarch64 as imp;
-    } else if #[cfg(any(target_arch = "x86", target_arch="x86_64"))] {
+    } else if #[cfg(all(
+        any(target_arch = "x86", target_arch = "x86_64"),
+        target_feature = "sse2",
+    ))] {
         use x86 as imp;
     } else {
         use soft as imp;
     }
 }
 
-#[cfg(all(
-    test,
-    not(any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64"))
-))]
-pub(crate) use imp::gf128_mul;
+use crate::{BLOCK_SIZE, KEY_SIZE};
 
-use crate::BLOCK_SIZE;
+pub const GHASH: bool = true;
+pub const POLYVAL: bool = false;
 
-pub const LE: bool = true;
-pub const BE: bool = false;
+/// Doubles `x` in GF(2¹²⁸).
+#[inline]
+pub(crate) const fn mulx(mut x: u128) -> u128 {
+    let hi = x >> 127;
+    x <<= 1;
+    x ^= hi ^ (hi << 127) ^ (hi << 126) ^ (hi << 121);
+    x
+}
+
+// To/from byte generic impls.
+#[allow(dead_code, reason = "Depends on the backend")]
+impl imp::FieldElement {
+    #[inline(always)]
+    pub fn to_soft(self) -> soft::FieldElement {
+        soft::FieldElement::from_le_bytes(&self.to_le_bytes())
+    }
+
+    #[inline(always)]
+    pub fn from_soft(fe: soft::FieldElement) -> Self {
+        Self::from_le_bytes(&fe.to_le_bytes())
+    }
+}
 
 /// An element in the field
 ///
@@ -38,47 +57,32 @@ pub const BE: bool = false;
 /// ```
 #[derive(Copy, Clone, Default, Debug)]
 #[repr(transparent)]
-pub struct FieldElement<const LE: bool = true>(imp::FieldElement);
+pub struct FieldElement(imp::FieldElement);
 
-impl<const LE: bool> FieldElement<LE> {
-    /// Creates a field element from bytes.
+impl FieldElement {
+    /// Creates a field element from little-endian bytes.
     #[inline]
-    pub fn from_bytes(data: &[u8; BLOCK_SIZE]) -> Self {
-        if LE {
-            Self(imp::FieldElement::from_le_bytes(data))
-        } else {
-            Self(imp::FieldElement::from_be_bytes(data))
-        }
+    #[cfg(test)]
+    fn from_le_bytes(data: &[u8; BLOCK_SIZE]) -> Self {
+        Self(imp::FieldElement::from_le_bytes(data))
     }
 
-    /// Converts the field element to bytes.
+    /// Converts the field element to little-endian bytes.
     #[inline]
-    pub fn to_bytes(self) -> [u8; BLOCK_SIZE] {
-        if LE {
-            self.0.to_le_bytes()
-        } else {
-            self.0.to_be_bytes()
-        }
+    #[cfg(test)]
+    fn to_le_bytes(self) -> [u8; BLOCK_SIZE] {
+        self.0.to_le_bytes()
     }
 
-    /// Multiplies `self` with the series of field elements in
-    /// `blocks`.
+    /// Doubles `self` in GF(2¹²⁸).
     #[inline]
-    pub fn polymul_series(self, pow: &[Self; 8], blocks: &[[u8; BLOCK_SIZE]]) -> Self {
-        if imp::supported() {
-            // SAFETY: `FieldElement` and `imp::FieldElement`
-            // have the same layout in memory. The pointer came
-            // from a reference, so it is safe to dereference.
-            let pow = unsafe { &*(pow as *const [FieldElement<LE>; 8]).cast() };
-            // SAFETY: `supported` is true, which means we can
-            // call `polymul_series`.
-            let fe = unsafe { self.0.polymul_series::<LE>(pow, blocks) };
-            Self(fe)
-        } else {
-            let pow = pow.map(|x| x.0.into_generic());
-            let fe = self.0.into_generic().polymul_series::<LE>(&pow, blocks);
-            Self(imp::FieldElement::from_generic(fe))
-        }
+    #[no_mangle]
+    fn mulx(self) -> Self {
+        let mut x = u128::from_le_bytes(self.0.to_le_bytes());
+        let hi = x >> 127;
+        x <<= 1;
+        x ^= hi ^ (hi << 127) ^ (hi << 126) ^ (hi << 121);
+        Self(imp::FieldElement::from_le_bytes(&x.to_le_bytes()))
     }
 }
 
@@ -92,230 +96,367 @@ impl PartialEq for FieldElement {
     }
 }
 
-impl<const LE: bool> BitXor for FieldElement<LE> {
-    type Output = Self;
-
-    #[inline]
-    fn bitxor(self, rhs: Self) -> Self {
-        Self(self.0 ^ rhs.0)
-    }
-}
-
-impl<const LE: bool> BitXorAssign for FieldElement<LE> {
-    #[inline]
-    fn bitxor_assign(&mut self, rhs: Self) {
-        self.0 ^= rhs.0;
-    }
-}
-
-impl<const LE: bool> Mul for FieldElement<LE> {
-    type Output = Self;
-
-    #[inline]
-    #[allow(clippy::arithmetic_side_effects)]
-    fn mul(self, rhs: Self) -> Self {
-        if imp::supported() {
-            // SAFETY: `supported` is true, which means we can
-            // call `polymul`.
-            let fe = unsafe { self.0.polymul(rhs.0) };
-            Self(fe)
-        } else {
-            let fe = self.0.into_generic() * rhs.0.into_generic();
-            Self(imp::FieldElement::from_generic(fe))
-        }
-    }
-}
-
-impl<const LE: bool> MulAssign for FieldElement<LE> {
-    #[inline]
-    #[allow(clippy::arithmetic_side_effects)]
-    fn mul_assign(&mut self, rhs: Self) {
-        *self = *self * rhs;
-    }
-}
-
 #[cfg(feature = "zeroize")]
 impl Zeroize for FieldElement {
+    #[inline]
     fn zeroize(&mut self) {
         self.0.zeroize();
     }
 }
 
-/// POLYVAL without precomputed powers for shorter inputs.
-pub struct Lite<const LE: bool = true> {
-    /// The running state.
-    y: FieldElement<LE>,
-    /// The key.
-    h: FieldElement<LE>,
+union Inner<A, S> {
+    asm: ManuallyDrop<A>,
+    soft: ManuallyDrop<S>,
 }
 
-impl<const LE: bool> Lite<LE> {
-    #[inline]
-    pub fn new(key: FieldElement<LE>) -> Self {
-        Self {
-            y: FieldElement::default(),
-            h: key,
+macro_rules! impl_hash {
+    ($name:ident) => {
+        /// POLYVAL (or GHASH) without precomputed powers for shorter
+        /// inputs.
+        pub struct $name<const GHASH: bool> {
+            inner: Inner<imp::$name<GHASH>, soft::$name<GHASH>>,
+            token: imp::Token,
         }
-    }
 
-    #[inline]
-    #[allow(clippy::arithmetic_side_effects)]
-    pub fn update_block(&mut self, block: &[u8; BLOCK_SIZE]) {
-        let fe = FieldElement::from_bytes(block);
-        self.y = (self.y ^ fe) * self.h;
-    }
+        impl<const GHASH: bool> $name<GHASH> {
+            #[inline]
+            fn have_asm(&self) -> bool {
+                self.token.supported()
+            }
 
-    #[inline]
-    pub fn update_blocks(&mut self, blocks: &[[u8; BLOCK_SIZE]]) {
-        for block in blocks {
-            self.update_block(block);
-        }
-    }
+            #[inline]
+            pub fn new(key: &[u8; KEY_SIZE]) -> Self {
+                let (token, supported) = imp::Token::new();
+                let inner = if supported {
+                    #[allow(unused_unsafe)]
+                    // SAFETY: `have_asm` is true, so it is safe
+                    // to call this function.
+                    let asm = unsafe { imp::$name::<GHASH>::new(key) };
+                    Inner {
+                        asm: ManuallyDrop::new(asm),
+                    }
+                } else {
+                    let soft = soft::$name::<GHASH>::new(key);
+                    Inner {
+                        soft: ManuallyDrop::new(soft),
+                    }
+                };
+                Self { inner, token }
+            }
 
-    #[inline]
-    pub fn tag(&self) -> [u8; 16] {
-        self.y.to_bytes()
-    }
-
-    #[inline]
-    pub fn export(&self) -> FieldElement<LE> {
-        self.y
-    }
-
-    #[inline]
-    pub fn reset(&mut self, y: FieldElement<LE>) {
-        self.y = y;
-    }
-}
-
-impl<const LE: bool> Clone for Lite<LE> {
-    #[inline]
-    fn clone(&self) -> Self {
-        Self {
-            y: self.y,
-            h: self.h,
-        }
-    }
-
-    #[inline]
-    fn clone_from(&mut self, other: &Self) {
-        self.y = other.y;
-        self.h = other.h;
-    }
-}
-
-#[cfg(feature = "zeroize")]
-impl<const LE: bool> ZeroizeOnDrop for Lite<LE> {}
-
-impl<const LE: bool> Drop for Lite<LE> {
-    #[inline]
-    fn drop(&mut self) {
-        #[cfg(feature = "zeroize")]
-        {
-            self.y.zeroize();
-            self.h.zeroize();
-        }
-        #[cfg(not(feature = "zeroize"))]
-        {
-            self.y ^= self.y;
-            self.h ^= self.h;
-        }
-    }
-}
-
-/// POLYVAL with precomputed powers for longer inputs.
-pub struct Precomputed<const LE: bool = true> {
-    /// The running state.
-    y: FieldElement<LE>,
-    /// Precomputed table of powers of `h` for batched
-    /// computations.
-    pow: [FieldElement<LE>; 8],
-}
-
-impl<const LE: bool> Precomputed<LE> {
-    #[inline]
-    #[allow(clippy::arithmetic_side_effects)]
-    pub fn new(key: FieldElement<LE>) -> Self {
-        let pow = {
-            let h = key;
-            let mut prev = h;
-            let mut pow: [FieldElement<LE>; 8] = Default::default();
-            for (i, v) in pow.iter_mut().rev().enumerate() {
-                *v = h;
-                if i > 0 {
-                    *v *= prev;
+            /// Writes one block to the hash.
+            #[inline]
+            pub fn update_block(&mut self, block: &[u8; BLOCK_SIZE]) {
+                if self.have_asm() {
+                    // SAFETY: `have_asm` is true, so `asm` has
+                    // been initialized.
+                    unsafe { (&mut self.inner.asm).update_block(block) }
+                } else {
+                    // SAFETY: `have_asm` is true, so `soft` has
+                    // been initialized.
+                    unsafe { (&mut self.inner.soft).update_block(block) }
                 }
-                prev = *v;
             }
-            pow
-        };
-        Self {
-            y: FieldElement::default(),
-            pow,
+
+            /// Writes one or more blocks to the hash.
+            #[inline]
+            pub fn update_blocks(&mut self, blocks: &[[u8; BLOCK_SIZE]]) {
+                if self.have_asm() {
+                    // SAFETY: `have_asm` is true, so `asm` has
+                    // been initialized.
+                    unsafe { (&mut self.inner.asm).update_blocks(blocks) }
+                } else {
+                    // SAFETY: `have_asm` is true, so `soft` has
+                    // been initialized.
+                    unsafe { (&mut self.inner.soft).update_blocks(blocks) }
+                }
+            }
+
+            #[inline]
+            pub fn tag(&self) -> [u8; 16] {
+                if self.have_asm() {
+                    // SAFETY: `have_asm` is true, so `asm` has
+                    // been initialized.
+                    unsafe { (&self.inner.asm).tag() }
+                } else {
+                    // SAFETY: `have_asm` is true, so `soft` has
+                    // been initialized.
+                    unsafe { (&self.inner.soft).tag() }
+                }
+            }
+
+            #[inline]
+            #[cfg(feature = "experimental")]
+            pub fn export(&self) -> FieldElement {
+                if self.have_asm() {
+                    // SAFETY: `have_asm` is true, so `asm` has
+                    // been initialized.
+                    let fe = unsafe { (&self.inner.asm).export() };
+                    FieldElement(fe)
+                } else {
+                    // SAFETY: `have_asm` is true, so `soft` has
+                    // been initialized.
+                    let fe = unsafe { (&self.inner.soft).export() };
+                    FieldElement(imp::FieldElement::from_soft(fe))
+                }
+            }
+
+            #[inline]
+            #[cfg(feature = "experimental")]
+            pub fn reset(&mut self, y: FieldElement) {
+                if self.have_asm() {
+                    // SAFETY: `have_asm` is true, so `asm` has
+                    // been initialized.
+                    unsafe { (&mut self.inner.asm).reset(y.0) }
+                } else {
+                    // SAFETY: `have_asm` is true, so `soft` has
+                    // been initialized.
+                    unsafe { (&mut self.inner.soft).reset(y.0.to_soft()) }
+                }
+            }
         }
-    }
 
-    #[inline]
-    #[allow(clippy::arithmetic_side_effects)]
-    pub fn update_block(&mut self, block: &[u8; BLOCK_SIZE]) {
-        let fe = FieldElement::from_bytes(block);
-        self.y = (self.y ^ fe) * self.pow[7];
-    }
+        impl<const GHASH: bool> Clone for $name<GHASH> {
+            #[inline]
+            fn clone(&self) -> Self {
+                let inner = if self.token.supported() {
+                    Inner {
+                        // SAFETY: `have_asm` is true, so `asm`
+                        // has been initialized.
+                        asm: unsafe { &self.inner.asm }.clone(),
+                    }
+                } else {
+                    Inner {
+                        // SAFETY: `have_asm` is true, so `soft`
+                        // has been initialized.
+                        soft: unsafe { &self.inner.soft }.clone(),
+                    }
+                };
+                Self {
+                    inner,
+                    token: self.token,
+                }
+            }
 
-    #[inline]
-    pub fn update_blocks(&mut self, blocks: &[[u8; BLOCK_SIZE]]) {
-        self.y = self.y.polymul_series(&self.pow, blocks);
-    }
-
-    #[inline]
-    pub fn tag(&self) -> [u8; 16] {
-        self.y.to_bytes()
-    }
-
-    #[inline]
-    pub fn export(&self) -> FieldElement<LE> {
-        self.y
-    }
-
-    #[inline]
-    pub fn reset(&mut self, y: FieldElement<LE>) {
-        self.y = y;
-    }
-}
-
-impl<const LE: bool> Clone for Precomputed<LE> {
-    #[inline]
-    fn clone(&self) -> Self {
-        Self {
-            y: self.y,
-            pow: self.pow,
+            #[inline]
+            fn clone_from(&mut self, other: &Self) {
+                if self.have_asm() {
+                    // SAFETY: `have_asm` is true, so `asm` has
+                    // been initialized.
+                    unsafe { (&mut self.inner.asm).clone_from(&other.inner.asm) }
+                } else {
+                    // SAFETY: `have_asm` is true, so `soft` has
+                    // been initialized.
+                    unsafe { (&mut self.inner.soft).clone_from(&other.inner.soft) }
+                }
+            }
         }
-    }
 
-    #[inline]
-    fn clone_from(&mut self, other: &Self) {
-        self.y = other.y;
-        self.pow = other.pow;
-    }
-}
-
-#[cfg(feature = "zeroize")]
-impl<const LE: bool> ZeroizeOnDrop for Precomputed<LE> {}
-
-impl<const LE: bool> Drop for Precomputed<LE> {
-    #[inline]
-    fn drop(&mut self) {
         #[cfg(feature = "zeroize")]
-        {
-            self.y.zeroize();
-            self.pow.zeroize();
-        }
-        #[cfg(not(feature = "zeroize"))]
-        {
-            self.y ^= self.y;
-            for h in &mut self.pow {
-                *h ^= *h;
+        impl<const GHASH: bool> ZeroizeOnDrop for $name<GHASH> {}
+
+        impl<const GHASH: bool> Drop for $name<GHASH> {
+            #[inline]
+            fn drop(&mut self) {
+                if self.have_asm() {
+                    // SAFETY: `have_asm` is true, so `asm` has
+                    // been initialized.
+                    unsafe { ManuallyDrop::drop(&mut self.inner.asm) }
+                } else {
+                    // SAFETY: `have_asm` is true, so `soft` has
+                    // been initialized.
+                    unsafe { ManuallyDrop::drop(&mut self.inner.soft) }
+                }
             }
+        }
+    };
+}
+impl_hash!(Big);
+impl_hash!(Small);
+
+// See https://doc.rust-lang.org/std/primitive.slice.html#method.as_chunks
+#[inline(always)]
+#[allow(clippy::arithmetic_side_effects)]
+pub(crate) const fn as_chunks<T, const N: usize>(data: &[T]) -> (&[[T; N]], &[T]) {
+    const { assert!(N > 0) }
+
+    let len_rounded_down = (data.len() / N) * N;
+    // SAFETY: The rounded-down value is always the same or
+    // smaller than the original length, and thus must be
+    // in-bounds of the slice.
+    let (head, tail) = unsafe { data.split_at_unchecked(len_rounded_down) };
+    let new_len = head.len() / N;
+    // SAFETY: We cast a slice of `new_len * N` elements into
+    // a slice of `new_len` many `N` elements chunks.
+    let head = unsafe { slice::from_raw_parts(head.as_ptr().cast(), new_len) };
+    (head, tail)
+}
+
+#[cfg(test)]
+mod tests {
+    use hex_literal::hex;
+
+    use super::*;
+
+    macro_rules! fe {
+        ($s:expr) => {{
+            FieldElement::from_le_bytes(&hex!($s))
+        }};
+    }
+
+    #[test]
+    #[cfg(not(any(target_arch = "aarch64", target_arch = "x86", target_arch = "x86_64")))]
+    fn test_gf128_mul_commutative() {
+        use imp::gf128_mul;
+        use rand::{rngs::StdRng, RngCore, SeedableRng};
+
+        let mut rng = StdRng::from_entropy();
+        for _ in 0..100_000 {
+            let x = rng.next_u64();
+            let y = rng.next_u64();
+            let xy = unsafe { gf128_mul(x, y) };
+            let yx = unsafe { gf128_mul(y, x) };
+            assert_eq!(xy, yx, "{x}*{y}");
+        }
+    }
+
+    #[test]
+    fn test_mulx() {
+        let tests = [
+            fe!("02000000000000000000000000000000"),
+            fe!("04000000000000000000000000000000"),
+            fe!("08000000000000000000000000000000"),
+            fe!("10000000000000000000000000000000"),
+            fe!("20000000000000000000000000000000"),
+            fe!("40000000000000000000000000000000"),
+            fe!("80000000000000000000000000000000"),
+            fe!("00010000000000000000000000000000"),
+            fe!("00020000000000000000000000000000"),
+            fe!("00040000000000000000000000000000"),
+            fe!("00080000000000000000000000000000"),
+            fe!("00100000000000000000000000000000"),
+            fe!("00200000000000000000000000000000"),
+            fe!("00400000000000000000000000000000"),
+            fe!("00800000000000000000000000000000"),
+            fe!("00000100000000000000000000000000"),
+            fe!("00000200000000000000000000000000"),
+            fe!("00000400000000000000000000000000"),
+            fe!("00000800000000000000000000000000"),
+            fe!("00001000000000000000000000000000"),
+            fe!("00002000000000000000000000000000"),
+            fe!("00004000000000000000000000000000"),
+            fe!("00008000000000000000000000000000"),
+            fe!("00000001000000000000000000000000"),
+            fe!("00000002000000000000000000000000"),
+            fe!("00000004000000000000000000000000"),
+            fe!("00000008000000000000000000000000"),
+            fe!("00000010000000000000000000000000"),
+            fe!("00000020000000000000000000000000"),
+            fe!("00000040000000000000000000000000"),
+            fe!("00000080000000000000000000000000"),
+            fe!("00000000010000000000000000000000"),
+            fe!("00000000020000000000000000000000"),
+            fe!("00000000040000000000000000000000"),
+            fe!("00000000080000000000000000000000"),
+            fe!("00000000100000000000000000000000"),
+            fe!("00000000200000000000000000000000"),
+            fe!("00000000400000000000000000000000"),
+            fe!("00000000800000000000000000000000"),
+            fe!("00000000000100000000000000000000"),
+            fe!("00000000000200000000000000000000"),
+            fe!("00000000000400000000000000000000"),
+            fe!("00000000000800000000000000000000"),
+            fe!("00000000001000000000000000000000"),
+            fe!("00000000002000000000000000000000"),
+            fe!("00000000004000000000000000000000"),
+            fe!("00000000008000000000000000000000"),
+            fe!("00000000000001000000000000000000"),
+            fe!("00000000000002000000000000000000"),
+            fe!("00000000000004000000000000000000"),
+            fe!("00000000000008000000000000000000"),
+            fe!("00000000000010000000000000000000"),
+            fe!("00000000000020000000000000000000"),
+            fe!("00000000000040000000000000000000"),
+            fe!("00000000000080000000000000000000"),
+            fe!("00000000000000010000000000000000"),
+            fe!("00000000000000020000000000000000"),
+            fe!("00000000000000040000000000000000"),
+            fe!("00000000000000080000000000000000"),
+            fe!("00000000000000100000000000000000"),
+            fe!("00000000000000200000000000000000"),
+            fe!("00000000000000400000000000000000"),
+            fe!("00000000000000800000000000000000"),
+            fe!("00000000000000000100000000000000"),
+            fe!("00000000000000000200000000000000"),
+            fe!("00000000000000000400000000000000"),
+            fe!("00000000000000000800000000000000"),
+            fe!("00000000000000001000000000000000"),
+            fe!("00000000000000002000000000000000"),
+            fe!("00000000000000004000000000000000"),
+            fe!("00000000000000008000000000000000"),
+            fe!("00000000000000000001000000000000"),
+            fe!("00000000000000000002000000000000"),
+            fe!("00000000000000000004000000000000"),
+            fe!("00000000000000000008000000000000"),
+            fe!("00000000000000000010000000000000"),
+            fe!("00000000000000000020000000000000"),
+            fe!("00000000000000000040000000000000"),
+            fe!("00000000000000000080000000000000"),
+            fe!("00000000000000000000010000000000"),
+            fe!("00000000000000000000020000000000"),
+            fe!("00000000000000000000040000000000"),
+            fe!("00000000000000000000080000000000"),
+            fe!("00000000000000000000100000000000"),
+            fe!("00000000000000000000200000000000"),
+            fe!("00000000000000000000400000000000"),
+            fe!("00000000000000000000800000000000"),
+            fe!("00000000000000000000000100000000"),
+            fe!("00000000000000000000000200000000"),
+            fe!("00000000000000000000000400000000"),
+            fe!("00000000000000000000000800000000"),
+            fe!("00000000000000000000001000000000"),
+            fe!("00000000000000000000002000000000"),
+            fe!("00000000000000000000004000000000"),
+            fe!("00000000000000000000008000000000"),
+            fe!("00000000000000000000000001000000"),
+            fe!("00000000000000000000000002000000"),
+            fe!("00000000000000000000000004000000"),
+            fe!("00000000000000000000000008000000"),
+            fe!("00000000000000000000000010000000"),
+            fe!("00000000000000000000000020000000"),
+            fe!("00000000000000000000000040000000"),
+            fe!("00000000000000000000000080000000"),
+            fe!("00000000000000000000000000010000"),
+            fe!("00000000000000000000000000020000"),
+            fe!("00000000000000000000000000040000"),
+            fe!("00000000000000000000000000080000"),
+            fe!("00000000000000000000000000100000"),
+            fe!("00000000000000000000000000200000"),
+            fe!("00000000000000000000000000400000"),
+            fe!("00000000000000000000000000800000"),
+            fe!("00000000000000000000000000000100"),
+            fe!("00000000000000000000000000000200"),
+            fe!("00000000000000000000000000000400"),
+            fe!("00000000000000000000000000000800"),
+            fe!("00000000000000000000000000001000"),
+            fe!("00000000000000000000000000002000"),
+            fe!("00000000000000000000000000004000"),
+            fe!("00000000000000000000000000008000"),
+            fe!("00000000000000000000000000000001"),
+            fe!("00000000000000000000000000000002"),
+            fe!("00000000000000000000000000000004"),
+            fe!("00000000000000000000000000000008"),
+            fe!("00000000000000000000000000000010"),
+            fe!("00000000000000000000000000000020"),
+            fe!("00000000000000000000000000000040"),
+            fe!("00000000000000000000000000000080"),
+            fe!("010000000000000000000000000000c2"),
+        ];
+
+        let mut got = fe!("01000000000000000000000000000000");
+        for (i, &want) in tests.iter().enumerate() {
+            got = got.mulx();
+            assert_eq!(got, want, "#{i}");
         }
     }
 }
