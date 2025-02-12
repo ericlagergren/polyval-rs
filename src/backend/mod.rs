@@ -5,7 +5,7 @@ mod x86;
 use core::{fmt, mem::ManuallyDrop, slice};
 
 #[cfg(feature = "zeroize")]
-use zeroize::{Zeroize, ZeroizeOnDrop};
+use zeroize::Zeroize;
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "soft")] {
@@ -210,11 +210,9 @@ macro_rules! impl_hash {
                     // been initialized.
                     unsafe { (&mut self.inner.soft).clone_from(&other.inner.soft) }
                 }
+                self.token = other.token;
             }
         }
-
-        #[cfg(feature = "zeroize")]
-        impl<const GHASH: bool> ZeroizeOnDrop for $name<GHASH> {}
 
         impl<const GHASH: bool> Drop for $name<GHASH> {
             #[inline]

@@ -17,6 +17,13 @@ use subtle::ConstantTimeEq;
 
 pub use crate::poly::{Polyval, PolyvalLite};
 
+/// TODO
+pub fn polyval(key: &[u8; KEY_SIZE], data: &[u8]) -> Tag {
+    let mut p = Polyval::new_unchecked(key);
+    p.update_padded(data);
+    p.tag()
+}
+
 /// The size in bytes of a POLYVAL (or GHASH) key.
 pub const KEY_SIZE: usize = 16;
 
@@ -72,14 +79,12 @@ macro_rules! impl_state {
         impl Drop for $name {
             #[inline]
             fn drop(&mut self) {
-                #[cfg(feature = "zeroize")]
-                {
-                    use ::zeroize::Zeroize;
-                    self.y.zeroize();
-                }
-                #[cfg(not(feature = "zeroize"))]
-                {
-                    self.y = Default::default();
+                cfg_if::cfg_if! {
+                    if #[cfg(feature = "zeroize")] {
+                        ::zeroize::Zeroize::zeroize(&mut self.y);
+                    } else {
+                        self.y = ::core::hint::black_box(Default::default());
+                    }
                 }
             }
         }
@@ -207,6 +212,18 @@ macro_rules! impl_hash {
         #[cfg(feature = "zeroize")]
         #[cfg_attr(docsrs, doc(cfg(feature = "zeroize")))]
         impl ::zeroize::ZeroizeOnDrop for $name {}
+
+        impl Drop for $name {
+            #[inline]
+            fn drop(&mut self) {
+                #[cfg(feature = "zeroize")]
+                // SAFETY: `self` is "flat" data and is not used
+                // after this point.
+                unsafe {
+                    zeroize::zeroize_flat_type(self);
+                }
+            }
+        }
 
         impl ::core::fmt::Debug for $name {
             fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
