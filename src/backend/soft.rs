@@ -30,125 +30,20 @@ impl Token {
     }
 }
 
-#[derive(Copy, Clone, Debug, Default)]
-#[cfg_attr(test, derive(Eq, PartialEq))]
-#[repr(transparent)]
-pub(crate) struct FieldElement(u128);
-
-impl FieldElement {
-    /// Creates a field element from little-endian bytes.
-    #[inline]
-    pub const fn from_le_bytes(b: &[u8; BLOCK_SIZE]) -> Self {
-        Self(u128::from_le_bytes(*b))
-    }
-
-    /// Converts the field element to little-endian bytes.
-    #[inline]
-    pub const fn to_le_bytes(self) -> [u8; BLOCK_SIZE] {
-        self.0.to_le_bytes()
-    }
-
-    /// Creates a field element from big-endian bytes.
-    #[inline]
-    pub const fn from_be_bytes(b: &[u8; BLOCK_SIZE]) -> Self {
-        Self(u128::from_be_bytes(*b))
-    }
-
-    /// Converts the field element to big-endian bytes.
-    #[inline]
-    pub const fn to_be_bytes(self) -> [u8; BLOCK_SIZE] {
-        self.0.to_be_bytes()
-    }
-
-    const fn pack(lo: u64, hi: u64) -> Self {
-        Self(((hi as u128) << 64) | (lo as u128))
-    }
-
-    const fn unpack(self) -> (u64, u64) {
-        let lo = self.0 as u64;
-        let hi = (self.0 >> 64) as u64;
-        (lo, hi)
-    }
-
-    /// Doubles `self` in GF(2¹²⁸).
-    #[must_use = "this returns the result of the operation \
-                      without modifying the original"]
-    pub const fn mulx(self) -> Self {
-        Self(super::mulx(self.0))
-    }
-}
-
-impl BitXor for FieldElement {
-    type Output = Self;
-
-    #[inline(always)]
-    fn bitxor(self, rhs: Self) -> Self::Output {
-        Self(self.0 ^ rhs.0)
-    }
-}
-
-impl BitXorAssign for FieldElement {
-    #[inline(always)]
-    fn bitxor_assign(&mut self, rhs: Self) {
-        self.0 ^= rhs.0;
-    }
-}
-
-impl Mul for FieldElement {
-    type Output = Self;
-
-    #[inline(always)]
-    fn mul(self, rhs: Self) -> Self::Output {
-        polymul(self, rhs)
-    }
-}
-
-impl MulAssign for FieldElement {
-    #[inline(always)]
-    #[allow(clippy::arithmetic_side_effects)]
-    fn mul_assign(&mut self, rhs: Self) {
-        *self = *self * rhs;
-    }
-}
-
-impl Shl<u32> for FieldElement {
-    type Output = Self;
-
-    #[inline(always)]
-    fn shl(self, rhs: u32) -> Self::Output {
-        Self(self.0 << rhs)
-    }
-}
-
-impl Shr<u32> for FieldElement {
-    type Output = Self;
-
-    #[inline(always)]
-    fn shr(self, rhs: u32) -> Self::Output {
-        Self(self.0 >> rhs)
-    }
-}
-
-#[cfg(feature = "zeroize")]
-impl Zeroize for FieldElement {
-    fn zeroize(&mut self) {
-        self.0.zeroize();
-    }
-}
-
-pub(super) type Big<const GHASH: bool> = Polyval<GHASH, 8>;
-pub(super) type Small<const GHASH: bool> = Polyval<GHASH, 1>;
+pub(super) type Big<const GHASH: bool> = Backend<GHASH, 8>;
+pub(super) type Small<const GHASH: bool> = Backend<GHASH, 1>;
 
 #[derive(Clone, Debug)]
-pub struct Polyval<const GHASH: bool, const N: usize> {
+pub struct Backend<const GHASH: bool, const N: usize> {
     /// The running state.
     y: FieldElement,
     /// The key, possibly precomputed for batched computations.
     h: [FieldElement; N],
 }
 
-impl<const GHASH: bool, const N: usize> Polyval<GHASH, N> {
-    #[inline]
+impl<const GHASH: bool, const N: usize> Backend<GHASH, N> {
+    #[cfg_attr(feature = "soft", inline)]
+    #[cfg_attr(not(feature = "soft"), cold)]
     #[allow(clippy::arithmetic_side_effects, reason = "It's all in GF(2¹²⁸)")]
     pub fn new(key: &[u8; KEY_SIZE]) -> Self {
         let h = if GHASH {
@@ -174,7 +69,8 @@ impl<const GHASH: bool, const N: usize> Polyval<GHASH, N> {
         }
     }
 
-    #[inline]
+    #[cfg_attr(feature = "soft", inline)]
+    #[cfg_attr(not(feature = "soft"), cold)]
     #[allow(
         clippy::arithmetic_side_effects,
         clippy::indexing_slicing,
@@ -189,7 +85,8 @@ impl<const GHASH: bool, const N: usize> Polyval<GHASH, N> {
         self.y = (self.y ^ x) * self.h[N - 1];
     }
 
-    #[inline]
+    #[cfg_attr(feature = "soft", inline)]
+    #[cfg_attr(not(feature = "soft"), cold)]
     #[allow(
         clippy::arithmetic_side_effects,
         reason = "N - 1 is constant and N > 0"
@@ -263,6 +160,112 @@ impl<const GHASH: bool, const N: usize> Polyval<GHASH, N> {
     #[cfg(feature = "experimental")]
     pub fn reset(&mut self, y: FieldElement) {
         self.y = y;
+    }
+}
+
+#[derive(Copy, Clone, Debug, Default)]
+#[cfg_attr(test, derive(Eq, PartialEq))]
+#[repr(transparent)]
+pub(crate) struct FieldElement(u128);
+
+impl FieldElement {
+    /// Creates a field element from little-endian bytes.
+    #[inline]
+    pub const fn from_le_bytes(b: &[u8; BLOCK_SIZE]) -> Self {
+        Self(u128::from_le_bytes(*b))
+    }
+
+    /// Converts the field element to little-endian bytes.
+    #[inline]
+    pub const fn to_le_bytes(self) -> [u8; BLOCK_SIZE] {
+        self.0.to_le_bytes()
+    }
+
+    /// Creates a field element from big-endian bytes.
+    #[inline]
+    const fn from_be_bytes(b: &[u8; BLOCK_SIZE]) -> Self {
+        Self(u128::from_be_bytes(*b))
+    }
+
+    /// Converts the field element to big-endian bytes.
+    #[inline]
+    const fn to_be_bytes(self) -> [u8; BLOCK_SIZE] {
+        self.0.to_be_bytes()
+    }
+
+    const fn pack(lo: u64, hi: u64) -> Self {
+        Self(((hi as u128) << 64) | (lo as u128))
+    }
+
+    const fn unpack(self) -> (u64, u64) {
+        let lo = self.0 as u64;
+        let hi = (self.0 >> 64) as u64;
+        (lo, hi)
+    }
+
+    /// Doubles `self` in GF(2¹²⁸).
+    #[must_use = "this returns the result of the operation \
+                      without modifying the original"]
+    const fn mulx(self) -> Self {
+        Self(super::mulx(self.0))
+    }
+}
+
+impl BitXor for FieldElement {
+    type Output = Self;
+
+    #[inline(always)]
+    fn bitxor(self, rhs: Self) -> Self::Output {
+        Self(self.0 ^ rhs.0)
+    }
+}
+
+impl BitXorAssign for FieldElement {
+    #[inline(always)]
+    fn bitxor_assign(&mut self, rhs: Self) {
+        self.0 ^= rhs.0;
+    }
+}
+
+impl Mul for FieldElement {
+    type Output = Self;
+
+    #[inline(always)]
+    fn mul(self, rhs: Self) -> Self::Output {
+        polymul(self, rhs)
+    }
+}
+
+impl MulAssign for FieldElement {
+    #[inline(always)]
+    #[allow(clippy::arithmetic_side_effects)]
+    fn mul_assign(&mut self, rhs: Self) {
+        *self = *self * rhs;
+    }
+}
+
+impl Shl<u32> for FieldElement {
+    type Output = Self;
+
+    #[inline(always)]
+    fn shl(self, rhs: u32) -> Self::Output {
+        Self(self.0 << rhs)
+    }
+}
+
+impl Shr<u32> for FieldElement {
+    type Output = Self;
+
+    #[inline(always)]
+    fn shr(self, rhs: u32) -> Self::Output {
+        Self(self.0 >> rhs)
+    }
+}
+
+#[cfg(feature = "zeroize")]
+impl Zeroize for FieldElement {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
     }
 }
 

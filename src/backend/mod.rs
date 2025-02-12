@@ -2,7 +2,7 @@ mod aarch64;
 mod soft;
 mod x86;
 
-use core::{mem::ManuallyDrop, slice};
+use core::{fmt, mem::ManuallyDrop, slice};
 
 #[cfg(feature = "zeroize")]
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -73,17 +73,6 @@ impl FieldElement {
     fn to_le_bytes(self) -> [u8; BLOCK_SIZE] {
         self.0.to_le_bytes()
     }
-
-    /// Doubles `self` in GF(2¹²⁸).
-    #[inline]
-    #[no_mangle]
-    fn mulx(self) -> Self {
-        let mut x = u128::from_le_bytes(self.0.to_le_bytes());
-        let hi = x >> 127;
-        x <<= 1;
-        x ^= hi ^ (hi << 127) ^ (hi << 126) ^ (hi << 121);
-        Self(imp::FieldElement::from_le_bytes(&x.to_le_bytes()))
-    }
 }
 
 #[cfg(test)]
@@ -111,8 +100,6 @@ union Inner<A, S> {
 
 macro_rules! impl_hash {
     ($name:ident) => {
-        /// POLYVAL (or GHASH) without precomputed powers for shorter
-        /// inputs.
         pub struct $name<const GHASH: bool> {
             inner: Inner<imp::$name<GHASH>, soft::$name<GHASH>>,
             token: imp::Token,
@@ -269,6 +256,20 @@ macro_rules! impl_hash {
                 }
             }
         }
+
+        impl<const GHASH: bool> fmt::Debug for $name<GHASH> {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                if self.have_asm() {
+                    // SAFETY: `have_asm` is true, so `asm` is
+                    // initialized.
+                    unsafe { fmt::Debug::fmt(&self.inner.asm, f) }
+                } else {
+                    // SAFETY: `have_asm` is false, so `soft` is
+                    // initialized.
+                    unsafe { fmt::Debug::fmt(&self.inner.soft, f) }
+                }
+            }
+        }
     };
 }
 impl_hash!(Big);
@@ -302,6 +303,13 @@ mod tests {
         ($s:expr) => {{
             FieldElement::from_le_bytes(&hex!($s))
         }};
+    }
+
+    impl FieldElement {
+        fn mulx(self) -> Self {
+            let x = mulx(u128::from_le_bytes(self.0.to_le_bytes()));
+            Self(imp::FieldElement::from_le_bytes(&x.to_le_bytes()))
+        }
     }
 
     #[test]

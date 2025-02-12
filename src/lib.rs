@@ -125,19 +125,19 @@ macro_rules! impl_hash {
             /// Only use this method if `key` is known to be
             /// non-zero. Using an all zero key fixes the output
             /// to zero, regardless of the input.
-            //#[inline]
+            #[inline]
             pub fn new_unchecked(key: &[u8; $crate::KEY_SIZE]) -> Self {
                 Self(<$inner>::new(key))
             }
 
             /// Writes a single block to the running hash.
-            #[inline]
+            //#[inline]
             pub fn update_block(&mut self, block: &[u8; $crate::BLOCK_SIZE]) {
                 self.0.update_block(block);
             }
 
             /// Writes one or more blocks to the running hash.
-            #[inline]
+            //#[inline]
             pub fn update_blocks(&mut self, blocks: &[[u8; $crate::BLOCK_SIZE]]) {
                 self.0.update_blocks(blocks);
             }
@@ -165,7 +165,7 @@ macro_rules! impl_hash {
             }
 
             /// Returns the current authentication tag.
-            //#[inline]
+            #[inline]
             pub fn tag(self) -> $crate::Tag {
                 $crate::Tag(self.0.tag())
             }
