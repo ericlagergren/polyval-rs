@@ -268,7 +268,7 @@ impl<const GHASH: bool, const N: usize> Backend<GHASH, N> {
 
 #[derive(Copy, Clone, Debug)]
 #[repr(transparent)]
-pub(crate) struct FieldElement(__m128i);
+pub(super) struct FieldElement(__m128i);
 
 impl FieldElement {
     #[inline]

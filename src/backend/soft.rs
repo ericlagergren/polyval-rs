@@ -166,7 +166,7 @@ impl<const GHASH: bool, const N: usize> Backend<GHASH, N> {
 #[derive(Copy, Clone, Debug, Default)]
 #[cfg_attr(test, derive(Eq, PartialEq))]
 #[repr(transparent)]
-pub(crate) struct FieldElement(u128);
+pub(super) struct FieldElement(u128);
 
 impl FieldElement {
     /// Creates a field element from little-endian bytes.
@@ -269,7 +269,7 @@ impl Zeroize for FieldElement {
     }
 }
 
-pub(super) const fn polymul(x: FieldElement, y: FieldElement) -> FieldElement {
+const fn polymul(x: FieldElement, y: FieldElement) -> FieldElement {
     // We perform schoolbook multiplication of x and y:
     //
     // (x1,x0)*(y1,y0) = (x1*y1) + (x1*y0 + x0*y1) + (x0*y0)
