@@ -3,11 +3,33 @@
 use core::hint::black_box;
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use polyhash::*;
+use polyhash::{
+    ghash::{GHash, GHashLite},
+    Polyval, PolyvalLite, KEY_SIZE,
+};
 
-fn benchmark<B: Backend>(c: &mut Criterion, name: &str) {
-    let key = Key::new_unchecked(&[1u8; 16]);
-    let mut m = Polyval::<B>::new(&key);
+trait Hash {
+    fn new(key: &[u8; 16]) -> Self;
+    fn update_padded(&mut self, data: &[u8]);
+}
+macro_rules! impl_hash {
+    ($($name:ident),+ $(,)?) => {
+        $(
+            impl Hash for $name {
+                fn new(key: &[u8; 16]) -> Self {
+                    $name::new_unchecked(key)
+                }
+                fn update_padded(&mut self, data: &[u8]) {
+                    self.update_padded(data);
+                }
+            }
+        )+
+    };
+}
+impl_hash!(Polyval, PolyvalLite, GHash, GHashLite);
+
+fn benchmark<H: Hash>(c: &mut Criterion, name: &str) {
+    let mut m = <H>::new(&[0; KEY_SIZE]);
 
     let sizes = [16, 64, 128, 256, 512, 1024, 2048, 4096, 8192];
 
@@ -46,8 +68,10 @@ fn benchmark<B: Backend>(c: &mut Criterion, name: &str) {
 }
 
 fn benchmarks(c: &mut Criterion) {
-    benchmark::<Lite>(c, "lite");
-    benchmark::<Precomputed>(c, "precomputed");
+    benchmark::<Polyval>(c, "polyval/default");
+    benchmark::<PolyvalLite>(c, "polyval/lite");
+    benchmark::<GHash>(c, "ghash/default");
+    benchmark::<GHashLite>(c, "ghash/lite");
 }
 
 criterion_group!(benches, benchmarks);

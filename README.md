@@ -11,7 +11,7 @@ GHASH.
 
 ```bash
 [dependencies]
-polyhash = "0.1"
+polyhash = "0.3"
 ```
 
 ## Performance
@@ -22,7 +22,7 @@ instructions. The ARMv8 implementation requires NEON and PMULL.
 
 The defualt Rust implementation will be selected if the CPU does
 not support either assembly implementation. (This implementation
-can also be selected with the `soft` feature.) It is much 
+can also be selected with the `soft` feature.) It is much
 slower at around 7 cycles per byte.
 
 ## Security
