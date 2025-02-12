@@ -1,6 +1,6 @@
 [package]
 name = "polyhash"
-version = "0.3.0"
+version = "0.3.1"
 description = """
 POLYVAL and GHASH per RFC 8452.
 """
@@ -39,7 +39,7 @@ unwrap_used = "warn"
 wildcard_imports = "warn"
 
 [features]
-default = []
+default = ["zeroize"]
 
 # Experimental features NOT covered by semver.
 experimental = []
@@ -55,9 +55,11 @@ zeroize = ["dep:zeroize"]
 
 [dependencies]
 cfg-if = { version = "1", default-features = false }
-cpufeatures = { version = ">=0.2.15", default-features = false }
 subtle = { version = "2.6", default-features = false, features = ["core_hint_black_box"] }
 zeroize = { version = "1.8", default-features = false, optional = true }
+
+[target.'cfg(any(target_arch = "aarch64", target_arch = "x86_64", target_arch = "x86"))'.dependencies]
+cpufeatures = { version = ">=0.2.15", default-features = false }
 
 [dev-dependencies]
 polyhash = { path = ".", features = ["experimental"] }
@@ -67,7 +69,7 @@ hex-literal = { version = "0.4" }
 criterion = { version = "0.5" }
 rand = { version = "0.8", features = ["std_rng"] }
 serde_json = { version = "1" }
-serde = { version = "1.0", default-features = false, features = ["derive"] }
+serde = { version = "1", default-features = false, features = ["derive"] }
 
 [[bench]]
 name = "polyval"
