@@ -160,8 +160,8 @@ mod tests {
             p.update_padded(x);
             assert_eq!(&p.tag().0, r, "#{i} (precomp)");
 
-            let mut p = PolyvalLite::new_unchecked(&h);
-            p.update_padded(&x);
+            let mut p = PolyvalLite::new_unchecked(h);
+            p.update_padded(x);
             assert_eq!(&p.tag().0, r, "#{i} (lite)");
         }
     }

@@ -366,6 +366,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::arithmetic_side_effects)]
     fn test_fe_ops() {
         let a = fe!("66e94bd4ef8a2c3b884cfa59ca342b2e");
         let b = fe!("ff000000000000000000000000000000");

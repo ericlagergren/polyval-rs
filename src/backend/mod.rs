@@ -59,32 +59,6 @@ impl imp::FieldElement {
 #[repr(transparent)]
 pub struct FieldElement(imp::FieldElement);
 
-impl FieldElement {
-    /// Creates a field element from little-endian bytes.
-    #[inline]
-    #[cfg(test)]
-    fn from_le_bytes(data: &[u8; BLOCK_SIZE]) -> Self {
-        Self(imp::FieldElement::from_le_bytes(data))
-    }
-
-    /// Converts the field element to little-endian bytes.
-    #[inline]
-    #[cfg(test)]
-    fn to_le_bytes(self) -> [u8; BLOCK_SIZE] {
-        self.0.to_le_bytes()
-    }
-}
-
-#[cfg(test)]
-impl Eq for FieldElement {}
-
-#[cfg(test)]
-impl PartialEq for FieldElement {
-    fn eq(&self, other: &Self) -> bool {
-        PartialEq::eq(&self.0, &other.0)
-    }
-}
-
 #[cfg(feature = "zeroize")]
 impl Zeroize for FieldElement {
     #[inline]
@@ -306,9 +280,23 @@ mod tests {
     }
 
     impl FieldElement {
+        fn from_le_bytes(data: &[u8; BLOCK_SIZE]) -> Self {
+            Self(imp::FieldElement::from_le_bytes(data))
+        }
+
         fn mulx(self) -> Self {
             let x = mulx(u128::from_le_bytes(self.0.to_le_bytes()));
             Self(imp::FieldElement::from_le_bytes(&x.to_le_bytes()))
+        }
+    }
+
+    #[cfg(test)]
+    impl Eq for FieldElement {}
+
+    #[cfg(test)]
+    impl PartialEq for FieldElement {
+        fn eq(&self, other: &Self) -> bool {
+            PartialEq::eq(&self.0, &other.0)
         }
     }
 
