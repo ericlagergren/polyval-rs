@@ -131,13 +131,13 @@ macro_rules! impl_hash {
             }
 
             /// Writes a single block to the running hash.
-            //#[inline]
+            #[inline]
             pub fn update_block(&mut self, block: &[u8; $crate::BLOCK_SIZE]) {
                 self.0.update_block(block);
             }
 
             /// Writes one or more blocks to the running hash.
-            //#[inline]
+            #[inline]
             pub fn update_blocks(&mut self, blocks: &[[u8; $crate::BLOCK_SIZE]]) {
                 self.0.update_blocks(blocks);
             }
