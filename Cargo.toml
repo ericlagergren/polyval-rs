@@ -2,14 +2,14 @@
 name = "polyhash"
 version = "0.3.0"
 description = """
-POLYVAL per RFC 8452.
+POLYVAL and GHASH per RFC 8452.
 """
 edition = "2021"
 license = "BSD-3-Clause"
 readme = "README.md"
 documentation = "https://docs.rs/polyhash"
 repository = "https://github.com/ericlagergren/polyval-rs"
-keywords = [ "polyval", "universal-hash" ]
+keywords = [ "polyval", "ghash", "universal-hash" ]
 categories = [ "cryptography", "no-std", "no-std::no-alloc" ]
 
 [lints.rust]
@@ -44,9 +44,6 @@ default = []
 # Experimental features NOT covered by semver.
 experimental = []
 
-# Implement GHASH.
-ghash = []
-
 # Enable the software-only backend.
 soft = []
 
@@ -59,7 +56,7 @@ zeroize = ["dep:zeroize"]
 [dependencies]
 cfg-if = { version = "1", default-features = false }
 cpufeatures = { version = ">=0.2.15", default-features = false }
-subtle = { version = "2.5", default-features = false }
+subtle = { version = "2.6", default-features = false, features = ["core_hint_black_box"] }
 zeroize = { version = "1.8", default-features = false, optional = true }
 
 [dev-dependencies]
