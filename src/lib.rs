@@ -17,13 +17,6 @@ use subtle::ConstantTimeEq;
 
 pub use crate::poly::{Polyval, PolyvalLite};
 
-/// TODO
-pub fn polyval(key: &[u8; KEY_SIZE], data: &[u8]) -> Tag {
-    let mut p = Polyval::new_unchecked(key);
-    p.update_padded(data);
-    p.tag()
-}
-
 /// The size in bytes of a POLYVAL (or GHASH) key.
 pub const KEY_SIZE: usize = 16;
 
