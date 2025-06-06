@@ -16,9 +16,12 @@ macro_rules! impl_hash {
     ($($name:ident),+ $(,)?) => {
         $(
             impl Hash for $name {
+                #[inline]
                 fn new(key: &[u8; 16]) -> Self {
                     $name::new_unchecked(key)
                 }
+
+                #[inline]
                 fn update_padded(&mut self, data: &[u8]) {
                     self.update_padded(data);
                 }
@@ -35,33 +38,40 @@ fn benchmark<H: Hash>(c: &mut Criterion, name: &str) {
 
     let mut g = c.benchmark_group(name);
 
+    g.throughput(Throughput::Elements(1))
+        .bench_function("new", |b| {
+            b.iter(|| {
+                black_box(<H>::new(black_box(&[0; KEY_SIZE])));
+            });
+        });
+
     for size in sizes {
-        g.throughput(Throughput::Bytes(size as u64));
-        g.bench_with_input(
-            BenchmarkId::new("aligned/update_padded", size),
-            &size,
-            |b, &size| {
-                let data = vec![0; size];
-                b.iter(|| {
-                    black_box(black_box(&mut m).update_padded(black_box(&data)));
-                });
-            },
-        );
+        g.throughput(Throughput::Bytes(size as u64))
+            .bench_with_input(
+                BenchmarkId::new("aligned/update_padded", size),
+                &size,
+                |b, &size| {
+                    let data = vec![0; size];
+                    b.iter(|| {
+                        black_box(black_box(&mut m).update_padded(black_box(&data)));
+                    });
+                },
+            );
     }
 
     for size in sizes {
         let size = size - 1;
-        g.throughput(Throughput::Bytes(size as u64));
-        g.bench_with_input(
-            BenchmarkId::new("unaligned/update_padded", size),
-            &size,
-            |b, &size| {
-                let data = vec![0; size];
-                b.iter(|| {
-                    black_box(black_box(&mut m).update_padded(black_box(&data)));
-                });
-            },
-        );
+        g.throughput(Throughput::Bytes(size as u64))
+            .bench_with_input(
+                BenchmarkId::new("unaligned/update_padded", size),
+                &size,
+                |b, &size| {
+                    let data = vec![0; size];
+                    b.iter(|| {
+                        black_box(black_box(&mut m).update_padded(black_box(&data)));
+                    });
+                },
+            );
     }
 
     g.finish();

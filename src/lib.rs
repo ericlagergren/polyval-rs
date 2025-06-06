@@ -145,7 +145,7 @@ macro_rules! impl_hash {
             /// If the length of `blocks` is non-zero, it's
             /// padded to the lowest multiple of
             /// [`BLOCK_SIZE`][crate::BLOCK_SIZE].
-            #[inline]
+            //#[inline]
             pub fn update_padded(&mut self, blocks: &[u8]) {
                 let (head, tail) = $crate::as_blocks(blocks);
                 if !head.is_empty() {

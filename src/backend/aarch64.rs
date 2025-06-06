@@ -56,8 +56,7 @@ pub(super) type Small<const GHASH: bool> = Backend<GHASH, 1>;
 pub(super) struct Backend<const GHASH: bool, const N: usize> {
     /// The running state.
     y: uint8x16_t,
-    /// `h[N-1]` is the H, the remaining elements (if any) are
-    /// powers of `h[n-1]` for batched computations.
+    /// h[0] = H, h[1] = H^2, h[2] = H^3, etc,.
     h: [uint8x16_t; N],
 }
 
@@ -78,16 +77,15 @@ impl<const GHASH: bool, const N: usize> Backend<GHASH, N> {
             unsafe { vld1q_u8(key.as_ptr()) }
         };
         let h = {
-            let mut prev = h;
-            let mut pow: [uint8x16_t; N] = array::from_fn(|_| unsafe { vdupq_n_u8(0) });
-            for (i, v) in pow.iter_mut().rev().enumerate() {
-                *v = h;
-                if i > 0 {
-                    *v = unsafe { polymul(*v, prev) };
-                }
-                prev = *v;
-            }
-            pow
+            let mut prev = unsafe { vdupq_n_u8(0) };
+            array::from_fn(|i| {
+                prev = if i == 0 {
+                    h
+                } else {
+                    unsafe { polymul(h, prev) }
+                };
+                prev
+            })
         };
         Self {
             y: unsafe { vdupq_n_u8(0) },
@@ -100,11 +98,6 @@ impl<const GHASH: bool, const N: usize> Backend<GHASH, N> {
     /// [`Token::supported`] must be true.
     #[inline]
     #[target_feature(enable = "neon,aes")]
-    #[allow(
-        clippy::arithmetic_side_effects,
-        clippy::indexing_slicing,
-        reason = "N - 1 is constant and N > 0"
-    )]
     pub unsafe fn update_block(&mut self, block: &[u8; BLOCK_SIZE]) {
         const { assert!(N > 0) }
 
@@ -115,7 +108,7 @@ impl<const GHASH: bool, const N: usize> Backend<GHASH, N> {
             if GHASH {
                 x = swap_bytes(x);
             }
-            self.y = polymul(veorq_u8(self.y, x), self.h[N - 1]);
+            self.y = polymul(veorq_u8(self.y, x), self.h[0]);
         }
     }
 
@@ -128,13 +121,13 @@ impl<const GHASH: bool, const N: usize> Backend<GHASH, N> {
     pub unsafe fn update_blocks(&mut self, mut blocks: &[[u8; BLOCK_SIZE]]) {
         const { assert!(N > 0) }
 
-        if self.h.len() == 8 {
+        if N == 8 {
             let (head, tail) = super::as_chunks::<_, N>(blocks);
 
             for chunk in head {
-                let (lhs, rhs) = chunk.split_at(chunk.len() / 2);
-                let uint8x16x4_t(m0, m1, m2, m3) = unsafe { vld1q_u8_x4(lhs.as_ptr().cast()) };
-                let uint8x16x4_t(m4, m5, m6, m7) = unsafe { vld1q_u8_x4(rhs.as_ptr().cast()) };
+                let uint8x16x4_t(m0, m1, m2, m3) = unsafe { vld1q_u8_x4(chunk.as_ptr().cast()) };
+                let uint8x16x4_t(m4, m5, m6, m7) =
+                    unsafe { vld1q_u8_x4(chunk.as_ptr().add(4).cast()) };
 
                 let mut h = unsafe { vdupq_n_u8(0) };
                 let mut m = unsafe { vdupq_n_u8(0) };
@@ -144,7 +137,8 @@ impl<const GHASH: bool, const N: usize> Backend<GHASH, N> {
                     ($m:expr, $idx:expr) => {
                         unsafe {
                             let mut x = if GHASH { swap_bytes($m) } else { $m };
-                            if $idx == 0 {
+                            #[allow(clippy::arithmetic_side_effects, reason = "N == 8")]
+                            if $idx == N - 1 {
                                 // Fold in the accumulator.
                                 x = veorq_u8(x, self.y);
                             }
@@ -156,14 +150,20 @@ impl<const GHASH: bool, const N: usize> Backend<GHASH, N> {
                         }
                     };
                 }
-                karatsuba_xor!(m7, 7);
-                karatsuba_xor!(m6, 6);
-                karatsuba_xor!(m5, 5);
-                karatsuba_xor!(m4, 4);
-                karatsuba_xor!(m3, 3);
-                karatsuba_xor!(m2, 2);
-                karatsuba_xor!(m1, 1);
-                karatsuba_xor!(m0, 0);
+
+                // For some reason we get significantly worse
+                // performance if we calculate m0, m1, ..., m7
+                // instead of m7, m6, ..., m0. This holds true
+                // even if we reverse `self.h` so that we load
+                // h[0], h[1], ..., h[7].
+                karatsuba_xor!(m7, 0);
+                karatsuba_xor!(m6, 1);
+                karatsuba_xor!(m5, 2);
+                karatsuba_xor!(m4, 3);
+                karatsuba_xor!(m3, 4);
+                karatsuba_xor!(m2, 5);
+                karatsuba_xor!(m1, 6);
+                karatsuba_xor!(m0, 7);
 
                 let (h, l) = unsafe { karatsuba2(h, m, l) };
                 self.y = unsafe { mont_reduce(h, l) };
@@ -477,5 +477,13 @@ mod tests {
             assert_eq!(unsafe { a.polymul(b) }, want);
             assert_eq!(unsafe { b.polymul(a) }, want);
         }
+    }
+
+    #[test]
+    fn test_idk() {
+        let v = [[0u8; 16], [1; 16], [2; 16], [3; 16]];
+        let uint8x16x4_t(m0, m1, m2, m3) = unsafe { vld1q_u8_x4(v.as_ptr().cast()) };
+        println!("{:?} {:?} {:?} {:?}", m0, m1, m2, m3);
+        assert!(false);
     }
 }
